@@ -1,13 +1,13 @@
 /* 两颗心 · 离线兜底 Service Worker
    目标：第一次成功打开后，应用外壳永久常驻本机。
    之后即便 GitHub Pages 打不开，页面照样启动。 */
-var CACHE = 'lklx-v8';
+var CACHE = 'lklx-v9';
 var SHELL = [
   './',
   'index.html',
-  'app.js?v=8',
-  'kitty.js?v=8',
-  'style.css?v=8',
+  'app.js?v=9',
+  'kitty.js?v=9',
+  'style.css?v=9',
   'manifest.json',
   'icon-192.png',
   'icon-180.png'

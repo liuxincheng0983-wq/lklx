@@ -538,12 +538,14 @@ const IN_APP_BROWSER = (function () {
   if (/Alipay/i.test(u)) return '支付宝';
   return null;
 })();
+const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+  (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
 const IS_STANDALONE = ('standalone' in navigator) ? navigator.standalone
   : (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
 
 let geoState = 'unknown';   // unknown | ok | denied | fail
 
-function geoBar(html, btnText, onClick, kind) {
+function geoBar(html, btnText, onClick, kind, btn2) {
   const el = $('#geoBar'); if (!el) return;
   el.className = 'geobar' + (kind ? ' ' + kind : '');
   el.innerHTML = '<div class="grow">' + html + '</div>';
@@ -553,7 +555,23 @@ function geoBar(html, btnText, onClick, kind) {
     b.addEventListener('click', ev => { ev.preventDefault(); onClick(); });
     el.appendChild(b);
   }
+  if (btn2) {
+    const b2 = document.createElement('button');
+    b2.type = 'button'; b2.className = 'ghost'; b2.textContent = btn2[0];
+    b2.addEventListener('click', ev => { ev.preventDefault(); btn2[1](); });
+    el.appendChild(b2);
+  }
   el.hidden = false;
+}
+
+/* 复制当前网址 —— 用来「换个浏览器打开」或发给对方 */
+function copyUrl(tip) {
+  const u = location.href;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(u)
+      .then(() => toast(tip || '网址已复制', true))
+      .catch(() => prompt('复制这个网址：', u));
+  } else prompt('复制这个网址：', u);
 }
 function geoBarHide() { const el = $('#geoBar'); if (el) el.hidden = true; }
 
@@ -572,19 +590,36 @@ function askGeo() {
   );
 }
 
+/* 浏览器拒绝定位时，给出的提示必须是这台设备上真正能照做的步骤。
+   安卓和 iOS 的设置路径完全不同，之前一律按 iOS 写，安卓用户照着找不到。 */
+function deniedTip(stage) {
+  if (IS_IOS) {
+    return '<br>' + (IS_STANDALONE
+      ? '设置 → 隐私与安全性 → 定位服务 → 找到「两颗心」→ 改成「使用App期间」'
+      : '设置 → 隐私与安全性 → 定位服务 → 找到「Safari 网站」→ 改成「允许」');
+  }
+  return '<br>系统里允许过也可能被浏览器单独拦下：点地址栏左边的 <b>🔒 / ⓘ / 盾牌</b> 图标 → 网站设置（权限）→ 把「位置」改成<b>允许</b>，再刷新页面。'
+    + '<br>找不到这个开关、或者改了也没用，就是<b>这个浏览器不把定位给网页</b>（Via、夸克、UC 这类轻量浏览器和微信里都会这样）。'
+    + '<br>换一个浏览器打开同一个网址，或者直接用<b>安卓版「两颗心」App</b>。';
+}
 function onGeoErr(err) {
   const c = (err && err.code) || 0;
+  const ec = '<small class="ec">错误码 ' + c + ' · ' + esc(geoStage()) + '</small>';
   if (c === 1) {
     geoState = 'denied';
-    geoBar('<b>定位被拒绝了</b>' + (IS_STANDALONE
-      ? '设置 → 隐私与安全性 → 定位服务 → 找到「两颗心」→ 改成「使用App期间」'
-      : '设置 → 隐私与安全性 → 定位服务 → 找到 Safari 网站 → 改成「允许」'),
-      '再试一次', askGeo, 'warn');
+    geoBar('<b>定位被拒绝了</b>' + deniedTip() + ec,
+      '再试一次', askGeo, 'warn', ['复制网址', () => copyUrl('网址已复制，粘到别的浏览器里打开')]);
   } else {
     geoState = 'fail';
-    geoBar('<b>暂时拿不到位置</b>确认手机「定位服务」是开着的，或到窗边再试',
+    geoBar('<b>暂时拿不到位置</b>' +
+      (c === 3 ? '定位请求超时了，多半是室内信号弱 —— 到窗边或门外再试一次。'
+               : '确认手机「定位服务」是开着的，或到窗边再试。') + ec,
       '重试', askGeo, 'warn');
   }
+}
+/* 用来判断错误是「刚授权就失败」还是「跑起来之后才失败」 */
+function geoStage() {
+  return geoState === 'ok' ? '运行中丢失' : '未授权';
 }
 
 function startGeo() {
@@ -1366,16 +1401,10 @@ function buildWelcome() {
 /* ============ 14. 启动 ============ */
 function checkBrowser() {
   if (!IN_APP_BROWSER) return;
-  geoBar('<b>在「' + IN_APP_BROWSER + '」里没法定位</b>点右上角「…」→ 在 Safari 中打开；' +
-    '或先复制网址，再粘到 Safari 地址栏',
-    '复制网址', () => {
-      const u = location.href;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(u)
-          .then(() => toast('网址已复制，粘到 Safari 打开就能定位', true))
-          .catch(() => prompt('复制到 Safari 打开：', u));
-      } else prompt('复制到 Safari 打开：', u);
-    }, 'warn');
+  geoBar('<b>在「' + IN_APP_BROWSER + '」里没法定位</b>' +
+    (IS_IOS ? '点右上角「…」→ 在 Safari 中打开；' : '点右上角「…」→ 在浏览器中打开；') +
+    '或先复制网址，再粘到浏览器地址栏打开',
+    '复制网址', () => copyUrl('网址已复制，粘到浏览器里打开'), 'warn');
 }
 
 function tick() {

@@ -483,10 +483,71 @@ async function catchUp() {
 }
 
 /* ============ 8. 定位 ============ */
+/* iOS/Safari 的定位授权必须在「用户点击」时发起，否则权限框根本不弹。
+   另外微信、QQ 等内置浏览器会直接拦截定位。这里两种情况都单独处理。 */
+const IN_APP_BROWSER = (function () {
+  const u = navigator.userAgent || '';
+  if (/MicroMessenger/i.test(u)) return '微信';
+  if (/QQBrowser|QQ\//i.test(u)) return 'QQ';
+  if (/Weibo/i.test(u)) return '微博';
+  if (/Douyin|aweme/i.test(u)) return '抖音';
+  if (/Alipay/i.test(u)) return '支付宝';
+  return null;
+})();
+const IS_STANDALONE = ('standalone' in navigator) ? navigator.standalone
+  : (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+
+let geoState = 'unknown';   // unknown | ok | denied | fail
+
+function geoBar(html, btnText, onClick, kind) {
+  const el = $('#geoBar'); if (!el) return;
+  el.className = 'geobar' + (kind ? ' ' + kind : '');
+  el.innerHTML = '<div class="grow">' + html + '</div>';
+  if (btnText) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = btnText;
+    b.addEventListener('click', ev => { ev.preventDefault(); onClick(); });
+    el.appendChild(b);
+  }
+  el.hidden = false;
+}
+function geoBarHide() { const el = $('#geoBar'); if (el) el.hidden = true; }
+
+/* 用户点击后调用：这一步带着手势，iOS 才会弹权限框 */
+function askGeo() {
+  if (!navigator.geolocation) {
+    geoBar('<b>这台设备不支持定位</b>', null, null, 'warn');
+    return;
+  }
+  geoState = 'unknown';
+  geoBar('<b>正在请求定位…</b>请在弹窗里点「允许」', null, null);
+  navigator.geolocation.getCurrentPosition(
+    () => { geoBarHide(); startGeo(); },
+    err => onGeoErr(err),
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
+}
+
+function onGeoErr(err) {
+  const c = (err && err.code) || 0;
+  if (c === 1) {
+    geoState = 'denied';
+    geoBar('<b>定位被拒绝了</b>' + (IS_STANDALONE
+      ? '设置 → 隐私与安全性 → 定位服务 → 找到「两颗心」→ 改成「使用App期间」'
+      : '设置 → 隐私与安全性 → 定位服务 → 找到 Safari 网站 → 改成「允许」'),
+      '再试一次', askGeo, 'warn');
+  } else {
+    geoState = 'fail';
+    geoBar('<b>暂时拿不到位置</b>确认手机「定位服务」是开着的，或到窗边再试',
+      '重试', askGeo, 'warn');
+  }
+}
+
 function startGeo() {
-  if (!navigator.geolocation) { toast('此设备不支持定位'); return; }
-  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  if (!navigator.geolocation) { onGeoErr({ code: 2 }); return; }
+  if (watchId != null) { try { navigator.geolocation.clearWatch(watchId); } catch (e) {} }
   watchId = navigator.geolocation.watchPosition(pos => {
+    geoState = 'ok'; geoBarHide();
     const c = pos.coords;
     const g = GCJ.wgs2gcj(c.latitude, c.longitude);
     me = { lat: g[0], lng: g[1], raw: [c.latitude, c.longitude], acc: c.accuracy, speed: c.speed, head: c.heading, at: Date.now() };
@@ -500,12 +561,9 @@ function startGeo() {
     renderPeer();
     $('#gpsChip') && ($('#gpsChip').textContent = '±' + Math.round(c.accuracy) + 'm');
   }, err => {
-    if (!me) {
-      me = { lat: 23.1291, lng: 113.2644, acc: 999, at: Date.now(), fake: true };
-      upsertMe(me.lat, me.lng);
-      map.setView([me.lat, me.lng], 12);
-      toast('定位未开启，先显示大致位置');
-    }
+    // 拿不到定位时绝不伪造坐标 —— 否则对方会看到你在广州。
+    if (geoState !== 'ok') onGeoErr(err);
+    if (!me && map && !map._inited) { map.setView([34.5, 108.9], 4); map._inited = true; }
   }, { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 });
 }
 async function battery() {
@@ -517,6 +575,7 @@ async function battery() {
 }
 async function pubPos() {
   if (!me || !S.room || S.demo) return;
+  if (me.fake) return;   // 绝不把伪造坐标发出去
   const b = await battery();
   publish({
     v: 1, k: 'pos', id: myId(), n: S.name || '我', av: S.avatar,
@@ -782,8 +841,10 @@ function renderMe() {
     </div>
     <div class="btngrid">
       <button class="btn sm ghost" id="btnRand">${Kitty.heart('#FF6B9D', 14)} 随机生成</button>
-      <button class="btn sm" id="btnCopy">${Kitty.glyph('copy', 15, '#fff')} 复制发给对方</button>
+      <button class="btn sm ghost" id="btnSaveRoom">保存暗号</button>
     </div>
+    <button class="btn sm" id="btnCopy" style="width:100%;margin-top:8px">
+      ${Kitty.glyph('copy', 15, '#fff')} 复制暗号发给对方</button>
     <div class="sw" style="margin-top:6px">
       <div class="k">端到端加密<em>暗号当密钥，服务器读不懂内容</em></div>
       <input type="checkbox" id="swEnc" ${S.encrypt ? 'checked' : ''}>
@@ -820,7 +881,7 @@ function renderMe() {
       <b>iPhone</b>：装免费的 <b>OwnTracks</b>，它能在后台持续上报位置。<br><br>
       设置路径：打开 OwnTracks → 右上角 <b>+</b> → 模式选 <b>HTTP</b> →
       地址填下面这行 → 其它保持默认即可。
-      <div style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(0,0,0,.06);
+      <div id="otUrl" style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(0,0,0,.06);
         font-size:11px;word-break:break-all;line-height:1.5">${'https://ntfy.sh/' + (S.room ? topicOf(S.room) : '（先设置暗号）')}</div>
       <button class="btn sm line" id="btnOtCopy" style="margin-top:6px">复制这行地址</button>
       <div class="hint" style="margin-top:6px">
@@ -857,13 +918,28 @@ function renderMe() {
 
   // 绑定
   $('#inName').onchange = e => { S.name = e.target.value.trim(); save(); if (me) upsertMe(me.lat, me.lng); pubPos(); };
-  $('#inRoom').onchange = e => {
-    const v = e.target.value.trim(); if (v === S.room) return;
+  // 暗号：边打边存 + 显式保存，不再只依赖 change（iOS 上失焦时机不可靠）
+  let roomTimer = null;
+  const commitRoom = v => {
+    v = (v || '').trim();
+    if (v === S.room) return;
     S.room = v; save(); peer = null; peerHistory = []; seenIds.clear();
     if (peerMarker) { map.removeLayer(peerMarker); peerMarker = null; }
+    const ot = $('#otUrl');
+    if (ot) ot.textContent = v ? ('https://ntfy.sh/' + topicOf(v)) : '（先设置暗号）';
     drawTrail(); renderPeer(); renderTrailPanel(); connect(); restartPub();
-    toast(v ? '暗号已保存，正在连接…' : '暗号已清空');
+    toast(v ? '暗号已保存 ✓ 正在连接…' : '暗号已清空');
   };
+  $('#inRoom').addEventListener('input', e => {
+    clearTimeout(roomTimer);
+    roomTimer = setTimeout(() => commitRoom(e.target.value), 900);
+  });
+  $('#inRoom').addEventListener('change', e => { clearTimeout(roomTimer); commitRoom(e.target.value); });
+  $('#inRoom').addEventListener('focus', e => {
+    // iOS 键盘会盖住底部输入框，聚焦后把它滚到中间
+    setTimeout(() => { try { e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (x) {} }, 350);
+  });
+  $('#btnSaveRoom').onclick = () => { clearTimeout(roomTimer); commitRoom($('#inRoom').value); };
   $('#btnRand').onclick = () => {
     $('#inRoom').value = randRoom();
     $('#inRoom').dispatchEvent(new Event('change'));
@@ -971,7 +1047,10 @@ function bindUI() {
   const syncFabs = () => $('#fabs').classList.toggle('up', sheet.classList.contains('up'));
   new MutationObserver(syncFabs).observe(sheet, { attributes: true, attributeFilter: ['class'] });
 
-  $('#btnLocate').onclick = () => { if (me) map.flyTo([me.lat, me.lng], 16, { duration: 0.7 }); else toast('正在定位…'); };
+  $('#btnLocate').onclick = () => {
+    if (me) map.flyTo([me.lat, me.lng], 16, { duration: 0.7 });
+    else askGeo();     // 没有位置时，这一步顺便当成「授权定位」的入口
+  };
   $('#btnFit2').onclick = () => {
     const pts = []; if (me) pts.push([me.lat, me.lng]); if (peer) pts.push([peer.lat, peer.lng]);
     if (pts.length === 2) map.fitBounds(pts, { padding: [70, 110] });
@@ -1079,7 +1158,8 @@ function finishWelcome() {
   if (!room) { toast('暗号不能为空'); return; }
   S.room = room; S.welcome = true; save();
   $('#welcome').classList.remove('on');
-  startGeo(); connect(); catchUp(); restartPub();
+  askGeo();     // 这一步带着点击手势，iOS 才会弹定位权限框
+  connect(); catchUp(); restartPub();
   renderMe(); renderPeer();
   $('#sheet').classList.add('up');
   document.querySelector('.tabs button[data-tab="Peer"]').click();
@@ -1161,6 +1241,20 @@ function buildWelcome() {
 }
 
 /* ============ 14. 启动 ============ */
+function checkBrowser() {
+  if (!IN_APP_BROWSER) return;
+  geoBar('<b>在「' + IN_APP_BROWSER + '」里没法定位</b>点右上角「…」→ 在 Safari 中打开；' +
+    '或先复制网址，再粘到 Safari 地址栏',
+    '复制网址', () => {
+      const u = location.href;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(u)
+          .then(() => toast('网址已复制，粘到 Safari 打开就能定位', true))
+          .catch(() => prompt('复制到 Safari 打开：', u));
+      } else prompt('复制到 Safari 打开：', u);
+    }, 'warn');
+}
+
 function tick() {
   if (peer) renderPeer();
   if (nearWatch && peer && me && !nearWatch.fired) {
@@ -1224,7 +1318,9 @@ function boot() {
 
   if (!S.welcome || !S.room) {
     openWelcome();
+    checkBrowser();
   } else {
+    checkBrowser();
     startGeo(); connect(); catchUp(); restartPub();
   }
   setInterval(tick, 1000);

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="day">
+<head>
+<meta charset="utf-8">
+<title>两颗心 · 实时定位</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#FFE9F2">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="两颗心">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="只属于你们两个人的实时定位地图">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+
+<div id="app">
+  <div id="map"></div>
+  <div id="veil"></div>
+
+  <div class="topbar">
+    <div class="brand">
+      <span id="logoSlot"></span>
+      <span><b>两颗心</b><br><small>L I A N G &nbsp;K E &nbsp;X I N</small></span>
+    </div>
+    <div class="conn"><i class="dot" id="dot"></i><span id="connText">未设置</span></div>
+  </div>
+
+  <div class="fabs" id="fabs"></div>
+
+  <div class="sheet" id="sheet">
+    <div class="handle"></div>
+    <div class="grab">
+      <div class="peek">
+        <div class="pav" id="peerAv"></div>
+        <div class="peek-info">
+          <div class="nm" id="peerName">等待对方…</div>
+          <div class="sb" id="peerSub">把暗号发给女朋友就能看到了</div>
+        </div>
+        <div class="distbox">
+          <div class="d" id="peerDist">--</div>
+          <div class="l" id="peerDistLbl">距离你</div>
+        </div>
+      </div>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <div class="panels">
+      <div class="panel on" id="panelPeer"></div>
+      <div class="panel" id="panelTrail"></div>
+      <div class="panel" id="panelChat"></div>
+      <div class="panel" id="panelMe"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="welcome"></div>
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="kitty.js?v=2"></script>
+<script src="app.js?v=2"></script>
+<script>
+  document.getElementById('logoSlot').innerHTML = Kitty.logo(30);
+  // 首次成功打开后，应用外壳常驻本机：即便网站被墙也能启动
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function () {});
+    });
+  }
+</script>
+</body>
+</html>

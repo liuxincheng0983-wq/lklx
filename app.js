@@ -1,0 +1,1168 @@
+/* ===========================================================
+   两颗心 LiangKeXin · 情侣实时定位
+   - 地图：高德瓦片（GCJ-02 火星坐标系，需实时纠偏）
+   - 通道：ntfy.sh 公共中继 + AES-GCM 端到端加密
+   - 本地：Leaflet + 原生 JS，零依赖
+   =========================================================== */
+(function () {
+'use strict';
+
+const NTFY = 'https://ntfy.sh';
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+
+/* ============ 1. 坐标系纠偏 (WGS84 <-> GCJ02) ============ */
+const GCJ = (function () {
+  const PI = Math.PI, A = 6378245.0, EE = 0.00669342162296594323;
+  function outOfChina(lat, lng) { return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55); }
+  function tLat(x, y) {
+    let r = -100 + 2 * x + 3 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    r += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+    r += (20 * Math.sin(y * PI) + 40 * Math.sin(y / 3 * PI)) * 2 / 3;
+    r += (160 * Math.sin(y / 12 * PI) + 320 * Math.sin(y * PI / 30)) * 2 / 3;
+    return r;
+  }
+  function tLng(x, y) {
+    let r = 300 + x + 2 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    r += (20 * Math.sin(6 * x * PI) + 20 * Math.sin(2 * x * PI)) * 2 / 3;
+    r += (20 * Math.sin(x * PI) + 40 * Math.sin(x / 3 * PI)) * 2 / 3;
+    r += (150 * Math.sin(x / 12 * PI) + 300 * Math.sin(x / 30 * PI)) * 2 / 3;
+    return r;
+  }
+  function delta(lat, lng) {
+    let dLat = tLat(lng - 105, lat - 35), dLng = tLng(lng - 105, lat - 35);
+    const rad = lat / 180 * PI, m = Math.sin(rad);
+    let magic = 1 - EE * m * m, sq = Math.sqrt(magic);
+    dLat = (dLat * 180) / ((A * (1 - EE)) / (magic * sq) * PI);
+    dLng = (dLng * 180) / (A / sq * Math.cos(rad) * PI);
+    return [dLat, dLng];
+  }
+  return {
+    wgs2gcj(lat, lng) {
+      if (outOfChina(lat, lng)) return [lat, lng];
+      const d = delta(lat, lng);
+      return [lat + d[0], lng + d[1]];
+    },
+    gcj2wgs(lat, lng) {
+      if (outOfChina(lat, lng)) return [lat, lng];
+      const d = delta(lat, lng);
+      return [lat - d[0], lng - d[1]];
+    },
+    ok(lat, lng) { return typeof lat === 'number' && typeof lng === 'number' &&
+      isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180; }
+  };
+})();
+
+/* ============ 2. 端到端加密 ============ */
+const Crypto_ = (function () {
+  let cacheKey = null, cachePass = '';
+  async function key(pass) {
+    if (cachePass === pass && cacheKey) return cacheKey;
+    const enc = new TextEncoder();
+    const base = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveKey']);
+    cacheKey = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt: enc.encode('liangkeixin-salt-v1'), iterations: 60000, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    cachePass = pass;
+    return cacheKey;
+  }
+  const b64 = buf => btoa(String.fromCharCode.apply(null, new Uint8Array(buf)));
+  const raw = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  return {
+    on: !!(window.crypto && crypto.subtle),
+    async enc(text, pass) {
+      const k = await key(pass), iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, new TextEncoder().encode(text));
+      const all = new Uint8Array(iv.length + ct.byteLength);
+      all.set(iv, 0); all.set(new Uint8Array(ct), iv.length);
+      return 'E1:' + b64(all);
+    },
+    async dec(payload, pass) {
+      if (payload.indexOf('E1:') !== 0) return payload;
+      const buf = raw(payload.slice(3));
+      const k = await key(pass);
+      const pt = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: buf.slice(0, 12) }, k, buf.slice(12));
+      return new TextDecoder().decode(pt);
+    }
+  };
+})();
+
+/* ============ 3. 状态 ============ */
+const DEFAULT = {
+  name: '', room: '', avatar: { t: 'k', c: '#FF6B9D' },
+  theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true,
+  trail: true, notify: false, sound: true, welcome: false, demo: false
+};
+const S = Object.assign({}, DEFAULT, load('lklx.cfg') || {});
+let me = null;              // 我的真实位置(GCJ)
+let peer = null;            // 对方 {lat,lng,...,at}
+let peerHistory = [];       // 对方轨迹点
+let myTrail = [];
+let myMarker = null, peerMarker = null, peerLine = null, myLine = null;
+let map = null, tileStd = null, tileSat = null, tileLabel = null;
+let watchId = null, pubTimer = null, pubFail = 0, es = null, lastPub = 0;
+const seenIds = new Set();
+const chat = [];
+
+function load(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+
+/* ---- 原生桥：安卓壳里设置存在 SharedPreferences，换端口/清缓存都不丢 ---- */
+function hasNative() { return typeof LKLX !== 'undefined' && LKLX && LKLX.cfg; }
+function nativeGet() {
+  if (!hasNative()) return null;
+  try { return JSON.parse(LKLX.cfg() || 'null'); } catch (e) { return null; }
+}
+function nativePush() {
+  if (!hasNative()) return;
+  try {
+    LKLX.cfg(JSON.stringify({
+      room: S.room || '', nm: S.name || '',
+      av: JSON.stringify(S.avatar || { t: 'k', c: '#FF6B9D' }),
+      intv: S.interval || 8, enc: !!S.encrypt, bg: true, near: 500
+    }));
+  } catch (e) {}
+}
+function save() {
+  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd } = S;
+  localStorage.setItem('lklx.cfg', JSON.stringify(
+    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd }));
+  nativePush();
+}
+
+/* ============ 4. 工具 ============ */
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+function haversine(a, b) {
+  if (!a || !b) return null;
+  const R = 6371000, r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const s = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+function fmtDist(m) {
+  if (m == null) return ['--', ''];
+  if (m < 950) return [Math.round(m / 10) * 10, '米'];
+  if (m < 100000) return [(m / 1000).toFixed(1), '公里'];
+  return [(m / 1000).toFixed(0), '公里'];
+}
+function ago(t) {
+  if (!t) return '从未';
+  const d = Math.max(0, (Date.now() - t) / 1000);
+  if (d < 8) return '刚刚';
+  if (d < 60) return Math.floor(d) + ' 秒前';
+  if (d < 3600) return Math.floor(d / 60) + ' 分钟前';
+  if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
+  return Math.floor(d / 86400) + ' 天前';
+}
+function hhmm(t) {
+  const d = new Date(t || Date.now());
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+function randRoom() {
+  const A = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let s = '';
+  for (let i = 0; i < 8; i++) s += A[Math.floor(Math.random() * A.length)];
+  return 'kitty-' + s;
+}
+function myId() {
+  // 安卓壳里用原生生成的稳定 id，避免每次重开身份都变（变了两端会认不出自己）
+  if (typeof LKLX !== 'undefined' && LKLX && LKLX.id) {
+    try { const nid = LKLX.id(); if (nid) { localStorage.setItem('lklx.id', nid); return nid; } } catch (e) {}
+  }
+  let id = localStorage.getItem('lklx.id');
+  if (!id) { id = Math.random().toString(36).slice(2, 10); localStorage.setItem('lklx.id', id); }
+  return id;
+}
+let toastT = null;
+function toast(msg, heart) {
+  const el = $('#toast');
+  el.className = 'toast on' + (heart ? ' heart' : '');
+  el.innerHTML = (heart ? Kitty.heart('#fff', 15) : '') + '<span>' + esc(msg) + '</span>';
+  clearTimeout(toastT);
+  toastT = setTimeout(() => { el.className = 'toast'; }, 2100);
+}
+function heartsBurst(n) {
+  n = n || 7;
+  const colors = ['#FF6B9D', '#FF4E8A', '#FFB3CC', '#FF93B9', '#F24E86'];
+  for (let i = 0; i < n; i++) {
+    const d = document.createElement('div');
+    d.className = 'floaty';
+    d.innerHTML = Kitty.heart(colors[i % colors.length], 20 + Math.random() * 26);
+    d.style.left = (18 + Math.random() * 64) + 'vw';
+    d.style.bottom = (18 + Math.random() * 28) + 'vh';
+    d.style.animationDelay = (i * 90) + 'ms';
+    document.body.appendChild(d);
+    setTimeout(() => d.remove(), 2100);
+  }
+}
+function vibe(ms) { if (navigator.vibrate) navigator.vibrate(ms || 14); }
+
+/* ============ 5. 地图 ============ */
+const TILES = {
+  // 底图：scl=2 才是 512px 高清；但它【不含任何注记文字】（实测 style 6~9 全部如此）
+  base: {
+    url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}',
+    retina: true, max: 19, native: 19, attr: '© 高德地图'
+  },
+  sat: {
+    url: 'https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=6&x={x}&y={y}&z={z}',
+    retina: true, max: 20, native: 19, attr: '© 高德地图 · 卫星'
+  },
+  // 注记层：只有 scl=1(256px) 带文字，而且必须【关掉 retina】
+  // 否则 Leaflet 会去请求 z+1 瓦片塞进 128px 格子，9px 的字缩成 4.5px，等于没文字
+  label: {
+    url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=8&x={x}&y={y}&z={z}',
+    retina: false, max: 19, native: 18
+  }
+};
+function mkTile(cfg, op) {
+  // 本机 dpr 3.75：底图必须 retina(tileSize 128 + zoomOffset 1)，512px 瓦片才 1:1 落屏
+  const retina = !!cfg.retina && S.hd !== false;
+  return L.tileLayer(cfg.url, {
+    subdomains: '1234',
+    tileSize: retina ? 128 : 256,
+    zoomOffset: retina ? 1 : 0,
+    maxZoom: cfg.max,
+    maxNativeZoom: cfg.native,
+    minZoom: 3,
+    updateWhenIdle: false,
+    keepBuffer: 3,
+    zoomControl: false,
+    attribution: cfg.attr || '',
+    opacity: op == null ? 1 : op
+  });
+}
+function initMap() {
+  map = L.map('map', {
+    center: [23.1291, 113.2644], zoom: 13, zoomControl: false,
+    attributionControl: true, preferCanvas: true, tap: false
+  });
+  tileStd = mkTile(TILES.base).addTo(map);
+  map.on('click', () => { if ($('#sheet').classList.contains('up')) $('#sheet').classList.remove('up'); });
+}
+function applyLayer() {
+  if (!map) return;
+  [tileStd, tileSat, tileLabel].forEach(t => { if (t) { try { map.removeLayer(t); } catch (e) {} } });
+  if (S.layer === 'sat') {
+    tileSat = mkTile(TILES.sat).addTo(map);
+  } else {
+    tileStd = mkTile(TILES.base).addTo(map);
+  }
+  // 注记层永远压最上层：高清底图是不带文字的，地图上的文字全靠这一层
+  tileLabel = mkTile(TILES.label).addTo(map);
+}
+
+/* ============ 6. 标记 ============ */
+function markerIcon(av, name, isMe) {
+  return L.divIcon({
+    className: 'mki', iconSize: [130, 96], iconAnchor: [65, 64],
+    html: Kitty.markerHTML(name, av, { me: isMe, ring: isMe ? '#5FCBB2' : '#FF6B9D', size: 52 })
+  });
+}
+function upsertMe(lat, lng) {
+  if (!myMarker) {
+    myMarker = L.marker([lat, lng], { icon: markerIcon(S.avatar, S.name || '我', true), zIndexOffset: 500, interactive: false }).addTo(map);
+  } else { myMarker.setLatLng([lat, lng]); }
+}
+function upsertPeer(p, animate) {
+  if (!peerMarker) {
+    peerMarker = L.marker([p.lat, p.lng], { icon: markerIcon(p.av, p.n || '宝贝', false), zIndexOffset: 1000 }).addTo(map);
+    if (map.getZoom() < 11) map.setView([p.lat, p.lng], 13);
+  } else {
+    peerMarker.setLatLng([p.lat, p.lng]);
+    peerMarker.setIcon(markerIcon(p.av, p.n || '宝贝', false));
+  }
+  if (animate) {
+    const el = peerMarker.getElement();
+    if (el) { const m = el.querySelector('.mk'); if (m) { m.classList.add('pulse'); setTimeout(() => m.classList.remove('pulse'), 720); } }
+  }
+}
+
+/* ============ 7. 发布 / 订阅 ============ */
+async function publish(obj) {
+  if (!S.room) return;
+  const plain = JSON.stringify(obj);
+  let body = plain;
+  if (S.encrypt) {
+    if (!Crypto_.on) {
+      // 非安全上下文（http / 本地文件）拿不到 WebCrypto。
+      // 绝不能假装加密：明确告警后才降级，并且只在界面上显著提示。
+      insecureWarn();
+      body = plain;
+    } else {
+      try { body = await Crypto_.enc(plain, S.room); }
+      catch (e) { failConn(); return; }   // 加密失败就干脆不发，绝不明文外泄
+    }
+  }
+  try {
+    const r = await fetch(NTFY + '/' + encodeURIComponent(S.room), {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: body
+    });
+    if (r.ok) { pubFail = 0; setConn('on'); } else { failConn(); }
+  } catch (e) { failConn(); }
+}
+function failConn() { pubFail++; if (pubFail >= 2) setConn('off'); }
+
+/* 非安全上下文时，位置无法在本机加密 —— 明确、反复地告诉用户 */
+let insecureTold = false;
+function insecureWarn() {
+  S.insecure = true;
+  if (insecureTold) return;
+  insecureTold = true;
+  setConn('warn');
+  toast('⚠️ 当前环境不支持加密，位置是明文发出的', true);
+  const n = $('#secNote');
+  if (n) { n.innerHTML = warnCard(); }
+}
+function warnCard() {
+  return `<div class="card warn">
+    <h4>⚠️ 当前没有加密</h4>
+    <div class="note">
+      这个地址不是 HTTPS，浏览器不给用加密接口，所以位置会<b>以明文</b>经过中转服务器。<br>
+      正式使用时请从 <b>https://</b> 开头的地址打开，或使用安卓版 App —— 那时会自动加密。
+    </div>
+  </div>`;
+}
+function setConn(state) {
+  const d = $('#dot'), t = $('#connText');
+  if (S.demo) { d.className = 'dot demo'; t.textContent = '演示模式'; return; }
+  if (state === 'warn') { d.className = 'dot warn'; t.textContent = '未加密共享中'; }
+  else if (state === 'on') {
+    if (S.encrypt && !Crypto_.on) { d.className = 'dot warn'; t.textContent = '未加密共享中'; }
+    else { d.className = 'dot on'; t.textContent = '实时共享中'; }
+  }
+  else if (state === 'off') { d.className = 'dot off'; t.textContent = '连接断开'; }
+  else { d.className = 'dot'; t.textContent = S.room ? '连接中…' : '未设置'; }
+}
+async function onRaw(message) {
+  let txt = message;
+  if (txt.indexOf('E1:') === 0) {
+    try { txt = await Crypto_.dec(txt, S.room); }
+    catch (e) { return; }   // 别人的消息 / 暗号不对
+  }
+  let o; try { o = JSON.parse(txt); } catch (e) { return; }
+  if (!o || o.id === myId()) return;
+  if (o.k === 'pos') onPeerPos(o);
+  else if (o.k === 'msg') onPeerMsg(o);
+  else if (o.k === 'sos') onPeerSos(o);
+}
+function onPeerPos(o) {
+  if (!GCJ.ok(o.lat, o.lon)) return;
+  const fresh = !peer || o.t > peer.t;
+  peer = {
+    lat: o.lat, lng: o.lon, av: o.av, n: o.n,
+    acc: o.ac, speed: o.sp, batt: o.b, chg: o.cg, at: Date.now(), t: o.t
+  };
+  if (fresh) {
+    if (S.trail) {
+      peerHistory.push({ lat: o.lat, lng: o.lon, t: o.t });
+      if (peerHistory.length > 400) peerHistory.shift();
+      localStorage.setItem('lklx.trail', JSON.stringify(peerHistory));
+      drawTrail();
+    }
+    upsertPeer(peer, true);
+    renderPeer();
+  }
+}
+function onPeerMsg(o) {
+  chat.push({ me: false, text: o.msg, t: o.t || Date.now() });
+  if (chat.length > 200) chat.shift();
+  renderChat();
+  heartsBurst(o.hearts ? 10 : 4);
+  vibe([30, 60, 30]);
+  toast((peer && peer.n ? peer.n : '对方') + '：' + o.msg, true);
+  if (S.notify && Notification && Notification.permission === 'granted') {
+    try { new Notification('💕 ' + (peer && peer.n ? peer.n : '宝贝'), { body: o.msg, tag: 'lklx' }); } catch (e) {}
+  }
+  if (S.sound) blip();
+}
+function onPeerSos(o) {
+  toast('⚠ ' + (o.n || '对方') + ' 发出求助！', false);
+  if (S.notify && Notification && Notification.permission === 'granted') {
+    try { new Notification('🆘 SOS 求助', { body: (o.n || '对方') + ' 需要你', tag: 'sos' }); } catch (e) {}
+  }
+  heartsBurst(12); vibe([80, 60, 80, 60, 220]);
+}
+function blip() {
+  try {
+    const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
+    const ctx = new C(), o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+    o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.26);
+    setTimeout(() => ctx.close(), 600);
+  } catch (e) {}
+}
+
+function connect() {
+  if (es) { try { es.close(); } catch (e) {} es = null; }
+  if (!S.room || S.demo) { setConn(S.demo ? 'demo' : ''); return; }
+  setConn('');
+  try {
+    es = new EventSource(NTFY + '/' + encodeURIComponent(S.room) + '/sse');
+    es.onopen = () => { setConn('on'); };
+    es.onmessage = ev => {
+      setConn('on');
+      let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.event === 'message' && d.id) {
+        if (seenIds.has(d.id)) return;
+        seenIds.add(d.id);
+        if (seenIds.size > 300) seenIds.clear();
+        onRaw(d.message);
+      }
+    };
+    es.onerror = () => setConn('off');
+  } catch (e) { setConn('off'); }
+}
+async function catchUp() {
+  if (!S.room || S.demo) return;
+  try {
+    const r = await fetch(NTFY + '/' + encodeURIComponent(S.room) + '/json?poll=1&since=6h');
+    const lines = (await r.text()).trim().split('\n').filter(Boolean);
+    for (const ln of lines) {
+      let d; try { d = JSON.parse(ln); } catch (e) { continue; }
+      if (d.event !== 'message') continue;
+      if (d.id) { if (seenIds.has(d.id)) continue; seenIds.add(d.id); }
+      await onRaw(d.message);
+    }
+    if (peer) { renderPeer(); }
+  } catch (e) {}
+}
+
+/* ============ 8. 定位 ============ */
+function startGeo() {
+  if (!navigator.geolocation) { toast('此设备不支持定位'); return; }
+  if (watchId != null) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(pos => {
+    const c = pos.coords;
+    const g = GCJ.wgs2gcj(c.latitude, c.longitude);
+    me = { lat: g[0], lng: g[1], raw: [c.latitude, c.longitude], acc: c.accuracy, speed: c.speed, head: c.heading, at: Date.now() };
+    upsertMe(me.lat, me.lng);
+    if (!peer && map && !map._inited) { map.setView([me.lat, me.lng], 15); map._inited = true; }
+    if (S.trail) {
+      myTrail.push({ lat: me.lat, lng: me.lng, t: Date.now() });
+      if (myTrail.length > 400) myTrail.shift();
+      drawTrail();
+    }
+    renderPeer();
+    $('#gpsChip') && ($('#gpsChip').textContent = '±' + Math.round(c.accuracy) + 'm');
+  }, err => {
+    if (!me) {
+      me = { lat: 23.1291, lng: 113.2644, acc: 999, at: Date.now(), fake: true };
+      upsertMe(me.lat, me.lng);
+      map.setView([me.lat, me.lng], 12);
+      toast('定位未开启，先显示大致位置');
+    }
+  }, { enableHighAccuracy: true, maximumAge: 3000, timeout: 20000 });
+}
+async function battery() {
+  try {
+    if (!navigator.getBattery) return null;
+    const b = await navigator.getBattery();
+    return { level: Math.round(b.level * 100), charging: b.charging };
+  } catch (e) { return null; }
+}
+async function pubPos() {
+  if (!me || !S.room || S.demo) return;
+  const b = await battery();
+  publish({
+    v: 1, k: 'pos', id: myId(), n: S.name || '我', av: S.avatar,
+    lat: +me.lat.toFixed(6), lon: +me.lng.toFixed(6),
+    ac: Math.round(me.acc || 0), sp: me.speed ? +me.speed.toFixed(1) : 0,
+    b: b ? b.level : null, cg: b ? b.charging : null, t: Date.now()
+  });
+}
+function restartPub() {
+  clearInterval(pubTimer);
+  if (S.demo || !S.room) return;
+  pubPos();
+  pubTimer = setInterval(() => {
+    const idle = !peer || (Date.now() - peer.at > 90000);
+    pubPos();
+    if (idle) {} // 保持心跳
+  }, Math.max(5, S.interval) * 1000);
+}
+
+/* ============ 9. 轨迹 ============ */
+function drawTrail() {
+  if (!map) return;
+  const show = S.trail;
+  if (peerLine) { map.removeLayer(peerLine); peerLine = null; }
+  if (myLine) { map.removeLayer(myLine); myLine = null; }
+  if (!show) return;
+  if (peerHistory.length > 1) {
+    peerLine = L.polyline(peerHistory.map(p => [p.lat, p.lng]),
+      { color: '#FF6B9D', weight: 4, opacity: 0.75, lineJoin: 'round', dashArray: '1 9', lineCap: 'round' }).addTo(map);
+  }
+  if (myTrail.length > 1) {
+    myLine = L.polyline(myTrail.map(p => [p.lat, p.lng]),
+      { color: '#5FCBB2', weight: 4, opacity: 0.6, lineJoin: 'round', dashArray: '1 9', lineCap: 'round' }).addTo(map);
+  }
+}
+
+/* ============ 10. 演示模式 ============ */
+let demoTimer = null, demoAngle = 0;
+const DEMO_CENTER = [23.1291, 113.2644];   // 广州塔附近
+function startDemo() {
+  S.demo = true; save();
+  setConn('demo');
+  if (!me) {
+    const g = GCJ.wgs2gcj(DEMO_CENTER[0], DEMO_CENTER[1]);
+    me = { lat: g[0] + 0.004, lng: g[1] - 0.005, acc: 12, at: Date.now() };
+    upsertMe(me.lat, me.lng);
+  }
+  map.setView([DEMO_CENTER[0], DEMO_CENTER[1]], 14);
+  const names = ['小猫咪', '宝贝', '小笨蛋', 'Kitty'];
+  const cols = ['#FF6B9D', '#F24E86', '#FF93B9', '#7FD8C4'];
+  peer = {
+    lat: DEMO_CENTER[0] + 0.012, lng: DEMO_CENTER[1] + 0.014,
+    n: S.demoName || '小美', av: { t: 'k', c: '#F24E86' },
+    acc: 18, speed: 1.2, batt: 76, chg: false, at: Date.now(), t: Date.now()
+  };
+  upsertPeer(peer, true);
+  if (me) map.fitBounds([[me.lat, me.lng], [peer.lat, peer.lng]], { padding: [70, 150] });
+  clearInterval(demoTimer);
+  demoTimer = setInterval(() => {
+    demoAngle += 0.09;
+    const r = 0.013;
+    const lat = DEMO_CENTER[0] + 0.010 + Math.sin(demoAngle) * r * 0.75;
+    const lng = DEMO_CENTER[1] + 0.013 + Math.cos(demoAngle * 0.8) * r;
+    peer.lat = lat; peer.lng = lng; peer.at = Date.now(); peer.t = Date.now();
+    peer.speed = +(0.4 + Math.abs(Math.sin(demoAngle * 1.7)) * 2.2).toFixed(1);
+    peer.batt = Math.max(20, Math.round(76 - (demoAngle * 2) % 40));
+    peer.acc = 8 + Math.round(Math.abs(Math.cos(demoAngle)) * 22);
+    upsertPeer(peer, false);
+    if (S.trail && Math.random() < 0.5) {
+      peerHistory.push({ lat, lng, t: Date.now() });
+      if (peerHistory.length > 400) peerHistory.shift();
+      drawTrail();
+    }
+    renderPeer();
+  }, 2500);
+  renderPeer(); renderTrailPanel();
+  toast('演示模式：这是模拟的对方位置');
+}
+function stopDemo() {
+  S.demo = false; save();
+  clearInterval(demoTimer); demoTimer = null;
+  peer = null; peerHistory = [];
+  if (peerMarker) { map.removeLayer(peerMarker); peerMarker = null; }
+  if (peerLine) { map.removeLayer(peerLine); peerLine = null; }
+  renderPeer(); renderTrailPanel();
+  connect(); restartPub();
+  toast('已切换到真实模式');
+}
+
+/* ============ 11. 渲染 ============ */
+function renderPeer() {
+  const $av = $('#peerAv'), $nm = $('#peerName'), $sb = $('#peerSub'), $d = $('#peerDist');
+  const $dl = $('#peerDistLbl');
+  if (!peer) {
+    $av.innerHTML = `<div class="ring">${Kitty.face({ bow: '#FFC9DD', w: 46, h: 40 })}</div>
+      <span class="live idle"></span>`;
+    $nm.textContent = S.demo ? '小美' : '等待对方…';
+    $sb.innerHTML = S.room ? '把暗号发给女朋友，让她打开同一个网址' : '还没设置房间暗号';
+    $d.textContent = '--'; $dl.textContent = '距离';
+    $('#panelPeer').innerHTML = `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
+      <div>还没有收到对方的位置</div>
+      <div style="font-size:11.5px;margin-top:6px">让她打开同一个网址，输入同一个暗号即可</div></div>`;
+    return;
+  }
+  const av = Kitty.avatarHTML(peer.av, 54);
+  const online = Date.now() - peer.at < 45000;
+  $av.innerHTML = `<div class="ring">${av}</div>
+    <span class="bow">${Kitty.heart('#FF4E8A', 17)}</span>
+    <span class="live ${online ? '' : 'idle'}"></span>`;
+  $nm.textContent = peer.n || '宝贝';
+  const m = haversine(me, peer);
+  const dstr = fmtDist(m);
+  $d.innerHTML = dstr[0] + (dstr[1] ? '<small>' + dstr[1] + '</small>' : '');
+  $dl.textContent = '距离你';
+  $sb.innerHTML = '<b>' + ago(peer.at) + '</b>更新 · ' + (online ? '在线' : '可能没在看手机');
+  renderPeerPanel(m);
+}
+function renderPeerPanel(m) {
+  const $p = $('#panelPeer');
+  const b = peer.batt;
+  const batTxt = b == null ? '未知' : b + '%' + (peer.chg ? ' · 充电中' : '');
+  const dstr = fmtDist(m);
+  const nav = (name, fn) => `<div class="row"><div class="ic">${Kitty.glyph(name, 16)}</div><div class="k">${name}</div></div>`;
+  $p.innerHTML = `
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 对方状态</h4>
+    <div class="row"><div class="ic">${Kitty.glyph('battery', 16)}</div>
+      <div class="k">手机电量</div><div class="v">${esc(batTxt)}</div></div>
+    <div class="row"><div class="ic">${Kitty.glyph('clock', 16)}</div>
+      <div class="k">最后更新<em>${peer.t ? hhmm(peer.t) : ''}</em></div>
+      <div class="v">${ago(peer.at)}</div></div>
+    <div class="row"><div class="ic">${Kitty.glyph('speed', 16)}</div>
+      <div class="k">移动速度</div>
+      <div class="v">${peer.speed == null ? '—' : (peer.speed * 3.6).toFixed(1) + ' km/h'}</div></div>
+    <div class="row"><div class="ic">${Kitty.glyph('gps', 16)}</div>
+      <div class="k">定位精度</div><div class="v">${peer.acc ? '±' + peer.acc + ' m' : '—'}</div></div>
+  </div>
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 快捷操作</h4>
+    <div class="btngrid" style="margin-bottom:9px">
+      <button class="btn sm" id="btnNav">${Kitty.glyph('nav', 15, '#fff')} 导航去她那</button>
+      <button class="btn sm ghost" id="btnCenter">${Kitty.glyph('eye', 15)} 地图上看她</button>
+    </div>
+    <div class="btngrid">
+      <button class="btn sm ghost" id="btnNear">${Kitty.glyph('bell', 15)} ${dstr[0]}${dstr[1]}到了</button>
+      <button class="btn sm danger" id="btnSos">${Kitty.glyph('sos', 15, '#fff')} 一键 SOS</button>
+    </div>
+    <div class="note" style="margin-top:11px">
+      已开启<b>端到端加密</b>：位置和消息在你的手机上加密后才发出，
+      即使经过公共服务器别人也读不懂内容。
+    </div>
+  </div>`;
+
+  $('#btnNav').onclick = () => {
+    const g = GCJ.gcj2wgs(peer.lat, peer.lng);
+    if (/iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent)) {
+      location.href = `https://maps.apple.com/?daddr=${g[0].toFixed(6)},${g[1].toFixed(6)}&dirflg=w`;
+      return;
+    }
+    // 交给原生：先唤起高德 App，没装就退到浏览器开网页版。
+    // 绝不能在 WebView 里直接跳导航链接 —— 之前就是被当网页加载，弹"网页无法打开"还顶掉了整个页面
+    if (window.LKLX && LKLX.nav) { LKLX.nav(peer.lat, peer.lng, peer.n || '她'); return; }
+    location.href = `https://uri.amap.com/navigation?to=${peer.lng.toFixed(6)},${peer.lat.toFixed(6)},${encodeURIComponent(peer.n || '她')}&mode=walk&coordinate=gaode&callnative=1`;
+  };
+  $('#btnCenter').onclick = () => focusPeer(true);
+  $('#btnNear').onclick = () => {
+    const km = Math.max(0.1, Math.round(haversine(me, peer) / 100) / 10);
+    toast('已设置：到达对方 ' + km + ' 公里内提醒（保持本页开启）', true);
+    nearWatch = { target: km * 1000, fired: false };
+  };
+  $('#btnSos').onclick = () => {
+    if (!confirm('确定向对方发送 SOS 求助吗？')) return;
+    publish({ v: 1, k: 'sos', id: myId(), n: S.name || '我', t: Date.now() });
+    heartsBurst(10);
+    if (me) publish({ v: 1, k: 'pos', id: myId(), n: S.name || '我', av: S.avatar, lat: +me.lat.toFixed(6), lon: +me.lng.toFixed(6), t: Date.now() });
+    toast('求助已发出', false);
+  };
+}
+let nearWatch = null;
+
+function renderTrailPanel() {
+  const pts = S.demo ? peerHistory : peerHistory;
+  const $t = $('#panelTrail');
+  if (!pts.length) {
+    $t.innerHTML = `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
+      <div>还没有轨迹记录</div>
+      <div style="font-size:11.5px;margin-top:6px">开启轨迹后，会记录你们走过的地方</div></div>`;
+    return;
+  }
+  const recent = pts.slice(-14).reverse();
+  $t.innerHTML = `
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 轨迹记录</h4>
+    <div class="sw"><div class="k">记录轨迹<em>共 ${pts.length} 个点</em></div>
+      <input type="checkbox" id="swTrail2" ${S.trail ? 'checked' : ''}></div>
+    <div class="btngrid" style="margin-top:8px">
+      <button class="btn sm ghost" id="btnFit">看完整路线</button>
+      <button class="btn sm line" id="btnClearTrail">清除轨迹</button>
+    </div>
+  </div>
+  <div class="card">
+    <h4>最近经过</h4>
+    ${recent.map(p => `<div class="trailrow">
+        <span class="t">${hhmm(p.t)}</span>
+        <span class="p">${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span></div>`).join('')}
+  </div>`;
+  $('#swTrail2').onchange = e => { S.trail = e.target.checked; save(); drawTrail(); renderTrailPanel(); };
+  $('#btnFit').onclick = () => {
+    if (pts.length > 1) map.fitBounds(pts.map(p => [p.lat, p.lng]), { padding: [60, 90] });
+  };
+  $('#btnClearTrail').onclick = () => {
+    if (!confirm('清除对方的历史轨迹？')) return;
+    peerHistory = []; localStorage.removeItem('lklx.trail'); drawTrail(); renderTrailPanel(); toast('轨迹已清除');
+  };
+}
+
+function renderChat() {
+  const box = $('#chatbox');
+  if (!box) return;
+  if (!chat.length) {
+    box.innerHTML = '<div class="msg sys">点下面的小按钮，给她发个信号 💕</div>';
+    return;
+  }
+  box.innerHTML = chat.slice(-60).map(m => `<div class="msg ${m.me ? 'me' : 'them'}">
+      ${esc(m.text)}<span class="tm">${hhmm(m.t)}</span></div>`).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderMe() {
+  $('#panelMe').innerHTML = `
+  <div id="secNote">${(S.encrypt && !Crypto_.on) ? warnCard() : ''}</div>
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 我的形象</h4>
+    <div class="field">
+      <label>我的昵称</label>
+      <input id="inName" maxlength="12" placeholder="给自己起个名字" value="${esc(S.name)}">
+    </div>
+    <label style="display:block;font-size:11.5px;font-weight:700;color:var(--ink3);letter-spacing:.8px;margin:4px 0 8px">我的头像</label>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">
+      <div style="width:66px;height:66px;border-radius:50%;overflow:hidden;display:grid;place-items:center;flex:none;
+        background:linear-gradient(150deg,#fff,#FFEFF5);border:2.5px solid var(--p400)">
+        ${Kitty.avatarHTML(S.avatar, 60)}
+      </div>
+      <div style="flex:1">
+        <div class="swatches" id="swatches">
+          ${['#FF6B9D', '#F24E86', '#FF93B9', '#7FD8C4', '#FFC93D', '#9C7BFF'].map(c =>
+            `<button class="swatch ${(!S.avatar.t || S.avatar.t === 'k') && S.avatar.c === c ? 'on' : ''}" data-c="${c}">
+               <span style="background:linear-gradient(140deg,${Kitty.lighten(c, 22)},${c})"></span></button>`).join('')}
+        </div>
+        <button class="btn sm ghost" id="btnPhoto" style="margin-top:10px">
+          ${Kitty.glyph('eye', 15)} 用自己的照片</button>
+        <input type="file" id="fileAv" accept="image/*" style="display:none">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 我们的暗号</h4>
+    <div class="field" style="margin-bottom:8px">
+      <input id="inRoom" placeholder="例如 kitty-a1b2c3d4" value="${esc(S.room)}">
+      <div class="hint">两个人必须填<b>完全一样</b>的暗号才能看到对方。别用太简单的，别人猜到了就能看到位置。</div>
+    </div>
+    <div class="btngrid">
+      <button class="btn sm ghost" id="btnRand">${Kitty.heart('#FF6B9D', 14)} 随机生成</button>
+      <button class="btn sm" id="btnCopy">${Kitty.glyph('copy', 15, '#fff')} 复制发给对方</button>
+    </div>
+    <div class="sw" style="margin-top:6px">
+      <div class="k">端到端加密<em>暗号当密钥，服务器读不懂内容</em></div>
+      <input type="checkbox" id="swEnc" ${S.encrypt ? 'checked' : ''}>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 定位与后台</h4>
+    <div class="field" style="margin-bottom:4px">
+      <label>位置更新频率：${S.interval} 秒</label>
+      <input type="range" id="inInt" min="5" max="60" step="1" value="${S.interval}"
+        style="width:100%;padding:0;background:none;border:none">
+      <div class="hint">越快越实时，也越费电。建议走路 8 秒、宅家 30 秒。</div>
+    </div>
+    <div class="sw">
+      <div class="k">记录轨迹<em>保存对方走过的路线</em></div>
+      <input type="checkbox" id="swTrail" ${S.trail ? 'checked' : ''}>
+    </div>
+    <div class="sw">
+      <div class="k">收到消息时通知我<em>需要先允许通知权限</em></div>
+      <input type="checkbox" id="swNotify" ${S.notify ? 'checked' : ''}>
+    </div>
+    <div class="sw">
+      <div class="k">提示音<em>她发消息时响一下</em></div>
+      <input type="checkbox" id="swSound" ${S.sound ? 'checked' : ''}>
+    </div>
+    <div class="note" style="margin-top:8px">
+      手机上如果把这个页面切到后台，定位会暂停。想让它在锁屏时也一直更新，
+      用我做的安卓版 App（带常驻服务），iPhone 用「快捷指令」做后台补点。
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 外观</h4>
+    <div class="sw"><div class="k">夜间模式<em>粉色星空</em></div>
+      <input type="checkbox" id="swTheme" ${S.theme === 'night' ? 'checked' : ''}></div>
+    <div class="sw"><div class="k">卫星地图</div>
+      <input type="checkbox" id="swSat" ${S.layer === 'sat' ? 'checked' : ''}></div>
+    <div class="sw"><div class="k">高清地图<em>更清晰 · 费流量</em></div>
+      <input type="checkbox" id="swHD" ${S.hd !== false ? 'checked' : ''}></div>
+    <div class="btngrid" style="margin-top:8px">
+      <button class="btn sm ghost" id="btnDemo">${Kitty.glyph('eye', 15)} ${S.demo ? '关闭演示模式' : '看看演示效果'}</button>
+      <button class="btn sm line" id="btnReset">重来一遍引导</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>${Kitty.glyph('lock', 13)} 关于隐私</h4>
+    <div class="note">
+      位置通过 <b>ntfy.sh</b> 公共服务器中转。开启加密后，服务器只能看到一串密文。
+      本应用不上架、不收集任何数据，所有内容只存在你们两台手机上。
+    </div>
+    <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--ink3)">
+      ${Kitty.logo(22)}<br>两颗心 v1.0 · 只为你们两个人做的
+    </div>
+  </div>`;
+
+  // 绑定
+  $('#inName').onchange = e => { S.name = e.target.value.trim(); save(); if (me) upsertMe(me.lat, me.lng); pubPos(); };
+  $('#inRoom').onchange = e => {
+    const v = e.target.value.trim(); if (v === S.room) return;
+    S.room = v; save(); peer = null; peerHistory = []; seenIds.clear();
+    if (peerMarker) { map.removeLayer(peerMarker); peerMarker = null; }
+    drawTrail(); renderPeer(); renderTrailPanel(); connect(); restartPub();
+    toast(v ? '暗号已保存，正在连接…' : '暗号已清空');
+  };
+  $('#btnRand').onclick = () => {
+    $('#inRoom').value = randRoom();
+    $('#inRoom').dispatchEvent(new Event('change'));
+  };
+  $('#btnCopy').onclick = async () => {
+    if (!S.room) return toast('先设置一个暗号');
+    const txt = `💕 两颗心 · 实时定位\n打开：${location.href}\n暗号：${S.room}\n（把这个发给女朋友）`;
+    try { await navigator.clipboard.writeText(txt); toast('已复制，直接粘贴发给她即可', true); }
+    catch (e) { prompt('复制下面的内容发给她：', txt); }
+  };
+  $('#swEnc').onchange = e => { S.encrypt = e.target.checked; save(); toast(S.encrypt ? '已开启加密' : '已关闭加密（不推荐）'); };
+  $('#inInt').oninput = e => { S.interval = +e.target.value;
+    e.target.previousElementSibling.textContent = '位置更新频率：' + S.interval + ' 秒'; };
+  $('#inInt').onchange = () => { save(); restartPub(); };
+  $('#swTrail').onchange = e => { S.trail = e.target.checked; save(); drawTrail(); };
+  $('#swNotify').onchange = async e => {
+    if (e.target.checked && 'Notification' in window) {
+      const p = await Notification.requestPermission();
+      if (p !== 'granted') { e.target.checked = false; toast('系统没给通知权限'); }
+    }
+    S.notify = e.target.checked; save();
+  };
+  $('#swSound').onchange = e => { S.sound = e.target.checked; save(); };
+  $('#swTheme').onchange = e => { S.theme = e.target.checked ? 'night' : 'day'; save(); applyTheme(); };
+  $('#swSat').onchange = e => { S.layer = e.target.checked ? 'sat' : 'std'; save(); applyLayer(); };
+  $('#swHD').onchange = e => { S.hd = e.target.checked; save(); applyLayer(); };
+  $('#btnDemo').onclick = () => { if (S.demo) stopDemo(); else startDemo(); renderMe(); };
+  $('#btnReset').onclick = () => { if (confirm('重新走一遍引导？')) { openWelcome(); } };
+
+  $$('#swatches .swatch').forEach(b => b.onclick = () => {
+    S.avatar = { t: 'k', c: b.dataset.c }; save(); renderMe();
+    if (me) upsertMe(me.lat, me.lng); pubPos();
+  });
+  $('#btnPhoto').onclick = () => $('#fileAv').click();
+  $('#fileAv').onchange = e => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const s = Math.min(img.width, img.height);
+        c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 256, 256);
+        S.avatar = { t: 'p', data: c.toDataURL('image/jpeg', 0.82) };
+        save(); renderMe(); if (me) upsertMe(me.lat, me.lng); pubPos();
+        toast('头像已更换', true);
+      };
+      img.src = rd.result;
+    };
+    rd.readAsDataURL(f);
+  };
+}
+function applyTheme() {
+  const night = S.theme === 'night';
+  document.documentElement.dataset.theme = night ? 'night' : 'day';
+  try { if (window.LKLX && LKLX.bars) LKLX.bars(night ? 'night' : 'day'); } catch (e) {}
+}
+
+/* 系统返回键：原生侧调用。返回 true = 我处理了（别退出），false = 交给系统退到桌面 */
+window.lklxBack = function () {
+  try {
+    if ($('#welcome').classList.contains('on')) {
+      if (step > 0) { step--; renderStep(); return true; }
+      return false;
+    }
+    if ($('#sheet').classList.contains('up')) { $('#sheet').classList.remove('up'); return true; }
+    const ov = document.querySelector('.overlay.on:not(#welcome)');
+    if (ov) { ov.classList.remove('on'); return true; }
+  } catch (e) {}
+  return false;
+};
+
+/* ============ 12. 交互 ============ */
+function focusPeer(up) {
+  if (!peer) { toast('还没收到对方位置'); return; }
+  if (up) map.flyTo([peer.lat, peer.lng], Math.max(map.getZoom(), 15), { duration: 0.8 });
+  else map.setView([peer.lat, peer.lng]);
+}
+function bindUI() {
+  // 面板展开/收起
+  const sheet = $('#sheet');
+  $('.grab').addEventListener('click', () => sheet.classList.toggle('up'));
+  $('.peek').addEventListener('click', e => {
+    if (e.target.closest('.pav')) { focusPeer(true); return; }
+    sheet.classList.toggle('up');
+  });
+  $$('.tabs button').forEach(b => b.onclick = () => {
+    $$('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+    $$('.panel').forEach(p => p.classList.toggle('on', p.id === 'panel' + b.dataset.tab));
+    if (!$('#sheet').classList.contains('up')) $('#sheet').classList.add('up');
+    if (b.dataset.tab === 'Trail') renderTrailPanel();
+    if (b.dataset.tab === 'Me') renderMe();
+    if (b.dataset.tab === 'Chat') renderChat();
+  });
+  const syncFabs = () => $('#fabs').classList.toggle('up', sheet.classList.contains('up'));
+  new MutationObserver(syncFabs).observe(sheet, { attributes: true, attributeFilter: ['class'] });
+
+  $('#btnLocate').onclick = () => { if (me) map.flyTo([me.lat, me.lng], 16, { duration: 0.7 }); else toast('正在定位…'); };
+  $('#btnFit2').onclick = () => {
+    const pts = []; if (me) pts.push([me.lat, me.lng]); if (peer) pts.push([peer.lat, peer.lng]);
+    if (pts.length === 2) map.fitBounds(pts, { padding: [70, 110] });
+    else if (pts.length === 1) map.setView(pts[0], 16);
+  };
+  $('#btnPokeFab').onclick = () => { sendPoke('想你啦 💕', true); };
+  $('#btnTheme').onclick = () => { S.theme = S.theme === 'night' ? 'day' : 'night'; save(); applyTheme();
+    renderMe(); toast(S.theme === 'night' ? '夜间模式' : '白天模式'); };
+
+  // 快捷短语
+  const QUICK = [
+    ['想你啦 💕', true], ['在干嘛呀', false], ['吃饭了吗 🍚', false],
+    ['注意安全哦', false], ['我到啦 📍', false], ['抱抱 🤗', true], ['早点睡 😴', false]
+  ];
+  $('#quick').innerHTML = QUICK.map((q, i) =>
+    `<button data-i="${i}">${esc(q[0])}</button>`).join('');
+  $$('#quick button').forEach(b => b.onclick = () => {
+    const q = QUICK[+b.dataset.i];
+    sendPoke(q[0], q[1]);
+  });
+  $('#btnSend').onclick = () => {
+    const v = $('#inMsg').value.trim(); if (!v) return;
+    $('#inMsg').value = ''; sendPoke(v, false, true);
+  };
+}
+function sendPoke(text, hearts, plain) {
+  if (!S.room) { toast('先在「我的」里设置房间暗号'); return; }
+  chat.push({ me: true, text, t: Date.now() });
+  renderChat();
+  publish({ v: 1, k: 'msg', id: myId(), n: S.name || '我', msg: text, hearts: !!hearts, t: Date.now() });
+  if (hearts) { heartsBurst(9); vibe(18); }
+  if (plain) toast('已发送', true);
+}
+
+/* ============ 13. 引导 ============ */
+let step = 0;
+function openWelcome() {
+  step = 0; renderStep();
+  $('#welcome').classList.add('on');
+}
+function renderStep() {
+  $$('.step').forEach((s, i) => s.classList.toggle('on', i === step));
+  $$('.steps i').forEach((s, i) => s.classList.toggle('on', i <= step));
+  if (step === 1) {
+    $('#wvAvatars').innerHTML = ['#FF6B9D', '#F24E86', '#FF93B9', '#7FD8C4', '#FFC93D', '#9C7BFF'].map(c =>
+      `<button class="swatch ${S.avatar.c === c && S.avatar.t !== 'p' ? 'on' : ''}" data-c="${c}">
+        <span style="background:linear-gradient(140deg,${Kitty.lighten(c, 22)},${c})"></span></button>`).join('')
+      + `<button class="swatch ${S.avatar.t === 'p' ? 'on' : ''}" id="wvPhoto"
+           style="background:var(--p100)">${Kitty.glyph('eye', 18)}</button>`;
+    $$('#wvAvatars .swatch[data-c]').forEach(b => b.onclick = () => {
+      S.avatar = { t: 'k', c: b.dataset.c }; save(); renderStep();
+      $('#wvPreview').innerHTML = Kitty.avatarHTML(S.avatar, 96);
+    });
+    $('#wvPhoto').onclick = () => $('#wvFile').click();
+    $('#wvFile').onchange = e => {
+      const f = e.target.files && e.target.files[0]; if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement('canvas'); c.width = c.height = 256;
+          const s = Math.min(img.width, img.height);
+          c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 256, 256);
+          S.avatar = { t: 'p', data: c.toDataURL('image/jpeg', 0.82) };
+          save(); renderStep(); $('#wvPreview').innerHTML = Kitty.avatarHTML(S.avatar, 96);
+        };
+        img.src = rd.result;
+      };
+      rd.readAsDataURL(f);
+    };
+    $('#wvPreview').innerHTML = Kitty.avatarHTML(S.avatar, 96);
+    $('#wvName').value = S.name;
+  }
+  if (step === 2) {
+    $('#wvRoom').value = S.room || randRoom();
+  }
+}
+function bindWelcome() {
+  $$('.wv-next').forEach(b => b.onclick = () => {
+    if (step === 1) {
+      const n = $('#wvName').value.trim();
+      if (!n) { toast('给自己起个名字吧'); return; }
+      S.name = n; save();
+    }
+    if (step === 2) { finishWelcome(); return; }
+    step++; renderStep();
+  });
+  $$('.wv-back').forEach(b => b.onclick = () => { if (step > 0) { step--; renderStep(); } });
+  $('#wvDemo').onclick = () => { $('#welcome').classList.remove('on'); startDemo();
+    renderMe(); $('#sheet').classList.add('up');
+    $$('.tabs button').forEach(x => x.classList.toggle('on', x.dataset.tab === 'Peer'));
+    document.querySelector('.tabs button[data-tab="Peer"]').click(); };
+  $('#wvRand').onclick = () => { $('#wvRoom').value = randRoom(); };
+  $('#wvShare').onclick = async () => {
+    const room = $('#wvRoom').value.trim();
+    if (!room) { toast('先填一个暗号'); return; }
+    const txt = `💕 两颗心 · 实时定位\n打开：${location.href}\n暗号：${room}`;
+    try { await navigator.clipboard.writeText(txt); toast('已复制，发给她就好', true); }
+    catch (e) { prompt('复制下面内容发给她：', txt); }
+  };
+  $('#wvGo').onclick = () => finishWelcome();
+}
+function finishWelcome() {
+  const room = $('#wvRoom').value.trim();
+  if (!room) { toast('暗号不能为空'); return; }
+  S.room = room; S.welcome = true; save();
+  $('#welcome').classList.remove('on');
+  startGeo(); connect(); catchUp(); restartPub();
+  renderMe(); renderPeer();
+  $('#sheet').classList.add('up');
+  document.querySelector('.tabs button[data-tab="Peer"]').click();
+  toast('开始共享位置 💕', true);
+  heartsBurst(8);
+}
+function buildWelcome() {
+  $('#welcome').innerHTML = `
+  <div class="inner">
+    <div class="steps"><i></i><i></i><i></i></div>
+
+    <div class="step on">
+      <div class="wel-hero">
+        <span class="kitty">${Kitty.face({ bow: '#FF6B9D', w: 158, h: 138 })}</span>
+        <h1>两颗心</h1>
+        <div class="en">L I A N G &nbsp; K E &nbsp; X I N</div>
+        <p>只属于你们两个人的地图<br>打开就能看到对方在哪，一直在一起 💕</p>
+      </div>
+      <div class="optlist">
+        <div class="opt"><div class="oi">${Kitty.glyph('map', 20)}</div>
+          <div class="ot"><b>真实地图</b><em>和地图软件一样的底图，街道、小区都看得清</em></div></div>
+        <div class="opt"><div class="oi">${Kitty.heart('#FF4E8A', 20)}</div>
+          <div class="ot"><b>实时看对方</b><em>距离、多久前更新、手机电量都能看到</em></div></div>
+        <div class="opt"><div class="oi">${Kitty.glyph('lock', 20)}</div>
+          <div class="ot"><b>只有你们看得懂</b><em>暗号当密钥加密，位置不上传给任何人</em></div></div>
+      </div>
+      <button class="btn wv-next" style="margin-top:14px">开始设置 ${Kitty.heart('#fff', 16)}</button>
+      <button class="btn line" id="wvDemo" style="margin-top:9px">先看看效果（演示模式）</button>
+    </div>
+
+    <div class="step">
+      <div class="wel-hero" style="margin-bottom:14px">
+        <span class="kitty">${Kitty.heart('#FF4E8A', 54)}</span>
+        <h1 style="font-size:23px">你是谁呀</h1>
+        <p>这个头像会出现在她的地图上</p>
+      </div>
+      <div class="glasscard" style="text-align:center">
+        <div id="wvPreview" style="display:inline-block;margin-bottom:14px"></div>
+        <div class="swatches" id="wvAvatars" style="justify-content:center"></div>
+        <input type="file" id="wvFile" accept="image/*" style="display:none">
+        <div class="field" style="margin-top:16px;text-align:left">
+          <label>我的昵称</label>
+          <input id="wvName" maxlength="12" placeholder="例如 小笨蛋 / 宝贝">
+        </div>
+      </div>
+      <div style="display:flex;gap:9px">
+        <button class="btn ghost wv-back" style="flex:0 0 92px">上一步</button>
+        <button class="btn wv-next">下一步</button>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="wel-hero" style="margin-bottom:14px">
+        <span class="kitty">${Kitty.glyph('lock', 46, '#F24E86')}</span>
+        <h1 style="font-size:23px">你们的暗号</h1>
+        <p>两个人填一模一样的暗号<br>才能在地图上看到对方</p>
+      </div>
+      <div class="glasscard">
+        <div class="field" style="margin-bottom:10px">
+          <label>房间暗号</label>
+          <input id="wvRoom" placeholder="kitty-xxxxxxxx">
+          <div class="hint">点右边随机生成，然后原样发给她。<br>别改成 123456 这种，容易被别人猜到。</div>
+        </div>
+        <div class="btngrid">
+          <button class="btn sm ghost" id="wvRand">换一个</button>
+          <button class="btn sm ghost" id="wvShare">${Kitty.glyph('copy', 15)} 复制给她</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:9px">
+        <button class="btn ghost wv-back" style="flex:0 0 92px">上一步</button>
+        <button class="btn" id="wvGo">完成 💕</button>
+      </div>
+      <div class="footer-note">
+        位置经 ntfy.sh 公共服务器加密中转 · 本体不上架商店<br>仅你们两人使用 · Hello Kitty 元素为本人手绘，非官方素材
+      </div>
+    </div>
+  </div>`;
+  bindWelcome();
+}
+
+/* ============ 14. 启动 ============ */
+function tick() {
+  if (peer) renderPeer();
+  if (nearWatch && peer && me && !nearWatch.fired) {
+    const d = haversine(me, peer);
+    if (d != null && d <= nearWatch.target) {
+      nearWatch.fired = true;
+      toast('💕 她就在 ' + (nearWatch.target < 1000 ? Math.round(nearWatch.target) + ' 米' : (nearWatch.target / 1000).toFixed(1) + ' 公里') + '内了！', true);
+      heartsBurst(8); vibe([40, 60, 40]);
+      if (S.notify && 'Notification' in window && Notification.permission === 'granted') {
+        try { new Notification('💕 快到了', { body: '她已经在你附近啦', tag: 'near' }); } catch (e) {}
+      }
+    }
+  }
+}
+function boot() {
+  applyTheme();
+  initMap();
+  applyLayer();
+  buildWelcome();
+  $('#tabs').innerHTML = [
+    ['Peer', 'map', '对方'], ['Trail', 'trail', '轨迹'],
+    ['Chat', 'chat', '互动'], ['Me', 'me', '我的']
+  ].map(t => `<button data-tab="${t[0]}" class="${t[0] === 'Peer' ? 'on' : ''}">
+      ${Kitty.icon(t[1], 20)}<span>${t[2]}</span></button>`).join('');
+  $('#panelChat').innerHTML = `
+    <div class="card" style="display:flex;flex-direction:column">
+      <h4>${Kitty.heart('#FF6B9D', 13)} 悄悄话</h4>
+      <div class="chatbox" id="chatbox"></div>
+      <div class="quickpokes" id="quick"></div>
+      <div style="display:flex;gap:8px">
+        <input id="inMsg" placeholder="说点什么…" maxlength="60"
+          style="flex:1;padding:11px 14px;border-radius:14px;background:var(--p50);border:1.6px solid var(--line);font-size:14px">
+        <button class="btn sm" id="btnSend" style="width:78px;flex:none">${Kitty.heart('#fff', 15)} 发送</button>
+      </div>
+    </div>
+    <div class="note">每条消息都用你们的暗号加密后发送，公共服务器读不懂内容。</div>`;
+  $('#fabs').innerHTML = `
+    <button class="fab heart" id="btnPokeFab" title="戳一戳">${Kitty.heart('#fff', 24)}</button>
+    <button class="fab" id="btnFit2" title="看全两个人">${Kitty.glyph('nav', 20)}</button>
+    <button class="fab" id="btnTheme" title="夜间模式">${Kitty.glyph('eye', 20)}</button>
+    <button class="fab" id="btnLocate" title="回到我的位置">${Kitty.glyph('gps', 20)}</button>`;
+  bindUI();
+
+  const savedTrail = load('lklx.trail');
+  if (savedTrail && Array.isArray(savedTrail)) peerHistory = savedTrail;
+
+  // 网页端存储空了（本地 HTTP 端口变了 / 清了缓存）就从原生配置补回来，不用重新输暗号
+  if ((!S.room || !S.welcome) && hasNative()) {
+    const n = nativeGet();
+    if (n && n.room) {
+      S.room = n.room;
+      if (n.nm) S.name = n.nm;
+      if (n.av) { try { S.avatar = JSON.parse(n.av) || S.avatar; } catch (e) {} }
+      if (n.intv) S.interval = n.intv;
+      S.welcome = true;
+      save();
+    }
+  }
+
+  renderChat(); renderPeer(); renderTrailPanel();
+
+  if (!S.welcome || !S.room) {
+    openWelcome();
+  } else {
+    startGeo(); connect(); catchUp(); restartPub();
+  }
+  setInterval(tick, 1000);
+  if (navigator.wakeLock) {
+    const lock = () => navigator.wakeLock.request('screen').catch(() => {});
+    lock();
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) lock(); });
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { catchUp(); if (me) pubPos(); } });
+  window.addEventListener('online', () => { connect(); pubPos(); });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+
+})();

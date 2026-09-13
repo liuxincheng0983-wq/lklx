@@ -54,6 +54,25 @@ const GCJ = (function () {
 })();
 
 /* ============ 2. 端到端加密 ============ */
+/* 暗号 → ntfy 频道名
+   ntfy 只接受 [-_A-Za-z0-9]{1,64}，中文/空格/emoji 暗号会返回 404 且前端毫无提示。
+   已合法的暗号原样沿用（保持兼容），其余按 UTF-8 字节折成 128 位确定值。 */
+function topicOf(s) {
+  s = String(s || '').trim();
+  if (!s) return '';
+  if (/^[-_A-Za-z0-9]{1,64}$/.test(s)) return s;
+  const b = new TextEncoder().encode(s);
+  let a = 0x811c9dc5, c = 0x01000193, d = 0x9e3779b9, e = 0x85ebca6b;
+  for (let i = 0; i < b.length; i++) {
+    a = Math.imul(a ^ b[i], 0x01000193) >>> 0;
+    c = Math.imul(c + b[i] + i, 0x85ebca6b) >>> 0;
+    d = Math.imul(d ^ (b[i] + i), 0xc2b2ae35) >>> 0;
+    e = ((Math.imul(e + b[i], 0x27d4eb2f) >>> 0) ^ (a >>> 7)) >>> 0;
+  }
+  const p = x => ('0000000' + (x >>> 0).toString(36)).slice(-7);
+  return 'lk' + p(a) + p(c) + p(d) + p(e);
+}
+
 const Crypto_ = (function () {
   let cacheKey = null, cachePass = '';
   async function key(pass) {
@@ -298,7 +317,7 @@ async function publish(obj) {
     }
   }
   try {
-    const r = await fetch(NTFY + '/' + encodeURIComponent(S.room), {
+    const r = await fetch(NTFY + '/' + topicOf(S.room), {
       method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: body
     });
     if (r.ok) { pubFail = 0; setConn('on'); } else { failConn(); }
@@ -433,7 +452,7 @@ function connect() {
   if (!S.room || S.demo) { setConn(S.demo ? 'demo' : ''); return; }
   setConn('');
   try {
-    es = new EventSource(NTFY + '/' + encodeURIComponent(S.room) + '/sse');
+    es = new EventSource(NTFY + '/' + topicOf(S.room) + '/sse');
     es.onopen = () => { setConn('on'); };
     es.onmessage = ev => {
       setConn('on');
@@ -451,7 +470,7 @@ function connect() {
 async function catchUp() {
   if (!S.room || S.demo) return;
   try {
-    const r = await fetch(NTFY + '/' + encodeURIComponent(S.room) + '/json?poll=1&since=6h');
+    const r = await fetch(NTFY + '/' + topicOf(S.room) + '/json?poll=1&since=6h');
     const lines = (await r.text()).trim().split('\n').filter(Boolean);
     for (const ln of lines) {
       let d; try { d = JSON.parse(ln); } catch (e) { continue; }
@@ -802,7 +821,7 @@ function renderMe() {
       设置路径：打开 OwnTracks → 右上角 <b>+</b> → 模式选 <b>HTTP</b> →
       地址填下面这行 → 其它保持默认即可。
       <div style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(0,0,0,.06);
-        font-size:11px;word-break:break-all;line-height:1.5">${'https://ntfy.sh/' + (S.room ? encodeURIComponent(S.room) : '（先设置暗号）')}</div>
+        font-size:11px;word-break:break-all;line-height:1.5">${'https://ntfy.sh/' + (S.room ? topicOf(S.room) : '（先设置暗号）')}</div>
       <button class="btn sm line" id="btnOtCopy" style="margin-top:6px">复制这行地址</button>
       <div class="hint" style="margin-top:6px">
         后台补点走的是<b>未加密</b>通道（OwnTracks 本身不支持加密），
@@ -874,7 +893,7 @@ function renderMe() {
   };
   $('#btnOtCopy').onclick = async () => {
     if (!S.room) return toast('先设置暗号');
-    const u = 'https://ntfy.sh/' + encodeURIComponent(S.room);
+    const u = 'https://ntfy.sh/' + topicOf(S.room);
     try { await navigator.clipboard.writeText(u); toast('已复制，粘到 OwnTracks 的地址栏', true); }
     catch (e) { prompt('复制下面这行：', u); }
   };

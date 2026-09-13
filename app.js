@@ -110,7 +110,7 @@ const Crypto_ = (function () {
 /* ============ 3. 状态 ============ */
 const DEFAULT = {
   name: '', room: '', avatar: { t: 'k', c: '#FF6B9D' },
-  theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true,
+  theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true, mapStyle: 'macaron',
   trail: true, notify: false, sound: true, welcome: false, demo: false,
   otrack: true
 };
@@ -120,7 +120,8 @@ let peer = null;            // 对方 {lat,lng,...,at}
 let peerHistory = [];       // 对方轨迹点
 let myTrail = [];
 let myMarker = null, peerMarker = null, peerLine = null, myLine = null;
-let map = null, tileStd = null, tileSat = null, tileLabel = null;
+let map = null, amap = null, tileSat = null, tileRoad = null, peerEl = null;
+let myMarkSig = '', peerMarkSig = '';
 let watchId = null, pubTimer = null, pubFail = 0, es = null, lastPub = 0;
 const seenIds = new Set();
 const chat = [];
@@ -144,9 +145,9 @@ function nativePush() {
   } catch (e) {}
 }
 function save() {
-  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack } = S;
+  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
-    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack }));
+    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle }));
   nativePush();
 }
 
@@ -220,83 +221,126 @@ function heartsBurst(n) {
 function vibe(ms) { if (navigator.vibrate) navigator.vibrate(ms || 14); }
 
 /* ============ 5. 地图 ============ */
-const TILES = {
-  // 底图：scl=2 才是 512px 高清；但它【不含任何注记文字】（实测 style 6~9 全部如此）
-  base: {
-    url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=2&style=7&x={x}&y={y}&z={z}',
-    retina: true, max: 19, native: 19, attr: '© 高德地图'
-  },
-  sat: {
-    url: 'https://webst0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=6&x={x}&y={y}&z={z}',
-    retina: true, max: 20, native: 19, attr: '© 高德地图 · 卫星'
-  },
-  // 注记层：只有 scl=1(256px) 带文字，而且必须【关掉 retina】
-  // 否则 Leaflet 会去请求 z+1 瓦片塞进 128px 格子，9px 的字缩成 4.5px，等于没文字
-  label: {
-    url: 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=8&x={x}&y={y}&z={z}',
-    retina: false, max: 19, native: 18
-  }
-};
-function mkTile(cfg, op) {
-  // 本机 dpr 3.75：底图必须 retina(tileSize 128 + zoomOffset 1)，512px 瓦片才 1:1 落屏
-  const retina = !!cfg.retina && S.hd !== false;
-  return L.tileLayer(cfg.url, {
-    subdomains: '1234',
-    tileSize: retina ? 128 : 256,
-    zoomOffset: retina ? 1 : 0,
-    maxZoom: cfg.max,
-    maxNativeZoom: cfg.native,
-    minZoom: 3,
-    updateWhenIdle: false,
-    keepBuffer: 3,
-    zoomControl: false,
-    attribution: cfg.attr || '',
-    opacity: op == null ? 1 : op
-  });
+/* 地图改用高德官方 JS API：矢量渲染，文字在设备上实时绘制。
+   旧方案是「图片瓦片拼贴」，屏幕上每个地名都是 256px 小图被放大 3.75 倍的产物，
+   所以看着发虚。矢量渲染没有这个问题，配色/图标/路名层级也和高德 App 一致。
+   ★ 注意：AMap 坐标是 [经度, 纬度]，和 Leaflet 的 [纬度, 经度] 相反。 */
+const MAP_STYLES = [
+  ['macaron', '马卡龙'], ['fresh', '清新'], ['normal', '标准'], ['light', '淡雅'],
+  ['whitesmoke', '烟灰'], ['graffiti', '涂鸦'], ['blue', '蓝调']
+];
+
+function mapStyleId() {
+  if (S.theme === 'night') return 'amap://styles/dark';
+  return 'amap://styles/' + (S.mapStyle || 'macaron');
 }
+
 function initMap() {
-  map = L.map('map', {
-    center: [23.1291, 113.2644], zoom: 13, zoomControl: false,
-    attributionControl: true, preferCanvas: true, tap: false
-  });
-  tileStd = mkTile(TILES.base).addTo(map);
-  map.on('click', () => { if ($('#sheet').classList.contains('up')) $('#sheet').classList.remove('up'); });
-}
-function applyLayer() {
-  if (!map) return;
-  [tileStd, tileSat, tileLabel].forEach(t => { if (t) { try { map.removeLayer(t); } catch (e) {} } });
-  if (S.layer === 'sat') {
-    tileSat = mkTile(TILES.sat).addTo(map);
-  } else {
-    tileStd = mkTile(TILES.base).addTo(map);
+  /* 适配层：保留原来的 map.xxx 调用方式，内部转成 AMap 的接口。
+     即使高德脚本没加载出来，这一层也必须存在，否则别处的 map.setView 会直接报错白屏。 */
+  map = {
+    _inited: false,
+    getZoom: () => (amap ? amap.getZoom() : 13),
+    setView(ll, z) { if (amap) amap.setZoomAndCenter(z || 13, [ll[1], ll[0]], true); },
+    flyTo(ll, z) { if (amap) amap.setZoomAndCenter(z || 13, [ll[1], ll[0]], true); },
+    fitBounds(pts) {
+      if (!amap || !pts || !pts.length) return;
+      let a = 90, b = -90, c = 180, d = -180;
+      pts.forEach(p => {
+        const la = Array.isArray(p) ? p[0] : p.lat, ln = Array.isArray(p) ? p[1] : p.lng;
+        if (la < a) a = la; if (la > b) b = la;
+        if (ln < c) c = ln; if (ln > d) d = ln;
+      });
+      if (a === b && c === d) { amap.setZoomAndCenter(15, [c, a], true); return; }
+      try { amap.setBounds(new AMap.Bounds([c, a], [d, b]), false, [70, 90, 200, 70]); }
+      catch (e) { amap.setZoomAndCenter(13, [(c + d) / 2, (a + b) / 2], true); }
+    },
+    removeLayer(o) { if (o && o.setMap) { try { o.setMap(null); } catch (e) {} } },
+    on(ev, fn) { if (amap) amap.on(ev, fn); }
+  };
+  if (typeof AMap === 'undefined') {
+    const el = document.getElementById('map');
+    if (el) el.innerHTML = '<div style="padding:60px 24px;text-align:center;color:#C2688A;'
+      + 'font-size:13px;line-height:1.9">地图组件没能加载出来<br>'
+      + '<span style="font-size:12px;opacity:.75">检查一下网络，然后下拉刷新</span></div>';
+    return;
   }
-  // 注记层永远压最上层：高清底图是不带文字的，地图上的文字全靠这一层
-  tileLabel = mkTile(TILES.label).addTo(map);
+  amap = new AMap.Map('map', {
+    zoom: 13, center: [113.2644, 23.1291], viewMode: '2D',
+    resizeEnable: true, zooms: [3, 19], mapStyle: mapStyleId()
+  });
+  amap.on('click', () => {
+    const s = $('#sheet');
+    if (s && s.classList.contains('up')) s.classList.remove('up');
+  });
+  /* 容器尺寸变化后必须 resize，否则地图会糊或错位 */
+  setTimeout(() => { try { amap.resize(); } catch (e) {} }, 300);
+  setTimeout(() => { try { amap.resize(); } catch (e) {} }, 1200);
+}
+
+function applyLayer() {
+  if (!amap) return;
+  [tileSat, tileRoad].forEach(t => { if (t) { try { amap.remove(t); } catch (e) {} } });
+  tileSat = tileRoad = null;
+  if (S.layer === 'sat') {
+    tileSat = new AMap.TileLayer.Satellite({ zIndex: 2 });
+    tileRoad = new AMap.TileLayer.RoadNet({ zIndex: 3 });
+    amap.add(tileSat); amap.add(tileRoad);
+  }
+  try { amap.setMapStyle(mapStyleId()); } catch (e) {}
 }
 
 /* ============ 6. 标记 ============ */
-function markerIcon(av, name, isMe) {
-  return L.divIcon({
-    className: 'mki', iconSize: [130, 96], iconAnchor: [65, 64],
-    html: Kitty.markerHTML(name, av, { me: isMe, ring: isMe ? '#5FCBB2' : '#FF6B9D', size: 52 })
-  });
+const MK_AX = 65, MK_AY = 64;   // 与 markerHTML 的锚点对齐（底边居中）
+function markSig(av, name, isMe) {
+  return name + '|' + (av && av.c ? av.c : '') + '|' + (isMe ? '1' : '0');
+}
+function mkMarkEl(av, name, isMe) {
+  const d = document.createElement('div');
+  d.className = 'mki';
+  d.style.cssText = 'width:130px;height:96px;position:relative';
+  d.innerHTML = Kitty.markerHTML(name, av, { me: isMe, ring: isMe ? '#5FCBB2' : '#FF6B9D', size: 52 });
+  return d;
 }
 function upsertMe(lat, lng) {
+  if (!amap) return;
+  const sig = markSig(S.avatar, S.name || '我', true);
   if (!myMarker) {
-    myMarker = L.marker([lat, lng], { icon: markerIcon(S.avatar, S.name || '我', true), zIndexOffset: 500, interactive: false }).addTo(map);
-  } else { myMarker.setLatLng([lat, lng]); }
+    myMarker = new AMap.Marker({
+      position: [lng, lat], content: mkMarkEl(S.avatar, S.name || '我', true),
+      offset: new AMap.Pixel(-MK_AX, -MK_AY), zIndex: 500, clickable: false, map: amap
+    });
+    myMarkSig = sig;
+  } else {
+    myMarker.setPosition([lng, lat]);
+    if (sig !== myMarkSig) {
+      myMarker.setContent(mkMarkEl(S.avatar, S.name || '我', true));
+      myMarkSig = sig;
+    }
+  }
 }
 function upsertPeer(p, animate) {
+  if (!amap) return;
+  const sig = markSig(p.av, p.n || '宝贝', false);
   if (!peerMarker) {
-    peerMarker = L.marker([p.lat, p.lng], { icon: markerIcon(p.av, p.n || '宝贝', false), zIndexOffset: 1000 }).addTo(map);
+    peerEl = mkMarkEl(p.av, p.n || '宝贝', false);
+    peerMarker = new AMap.Marker({
+      position: [p.lng, p.lat], content: peerEl,
+      offset: new AMap.Pixel(-MK_AX, -MK_AY), zIndex: 1000, map: amap
+    });
+    peerMarkSig = sig;
     if (map.getZoom() < 11) map.setView([p.lat, p.lng], 13);
   } else {
-    peerMarker.setLatLng([p.lat, p.lng]);
-    peerMarker.setIcon(markerIcon(p.av, p.n || '宝贝', false));
+    peerMarker.setPosition([p.lng, p.lat]);
+    if (sig !== peerMarkSig) {
+      peerEl = mkMarkEl(p.av, p.n || '宝贝', false);
+      peerMarker.setContent(peerEl);
+      peerMarkSig = sig;
+    }
   }
-  if (animate) {
-    const el = peerMarker.getElement();
-    if (el) { const m = el.querySelector('.mk'); if (m) { m.classList.add('pulse'); setTimeout(() => m.classList.remove('pulse'), 720); } }
+  if (animate && peerEl) {
+    const m = peerEl.querySelector('.mk');
+    if (m) { m.classList.add('pulse'); setTimeout(() => m.classList.remove('pulse'), 720); }
   }
 }
 
@@ -658,18 +702,25 @@ function restartPub() {
 
 /* ============ 9. 轨迹 ============ */
 function drawTrail() {
-  if (!map) return;
-  const show = S.trail;
-  if (peerLine) { map.removeLayer(peerLine); peerLine = null; }
-  if (myLine) { map.removeLayer(myLine); myLine = null; }
-  if (!show) return;
+  if (!amap) return;
+  if (peerLine) { try { peerLine.setMap(null); } catch (e) {} peerLine = null; }
+  if (myLine) { try { myLine.setMap(null); } catch (e) {} myLine = null; }
+  if (!S.trail) return;
   if (peerHistory.length > 1) {
-    peerLine = L.polyline(peerHistory.map(p => [p.lat, p.lng]),
-      { color: '#FF6B9D', weight: 4, opacity: 0.75, lineJoin: 'round', dashArray: '1 9', lineCap: 'round' }).addTo(map);
+    peerLine = new AMap.Polyline({
+      path: peerHistory.map(p => [p.lng, p.lat]),
+      strokeColor: '#FF6B9D', strokeWeight: 4, strokeOpacity: 0.75,
+      strokeStyle: 'dashed', strokeDasharray: [1, 9], lineJoin: 'round', lineCap: 'round',
+      zIndex: 200, map: amap
+    });
   }
   if (myTrail.length > 1) {
-    myLine = L.polyline(myTrail.map(p => [p.lat, p.lng]),
-      { color: '#5FCBB2', weight: 4, opacity: 0.6, lineJoin: 'round', dashArray: '1 9', lineCap: 'round' }).addTo(map);
+    myLine = new AMap.Polyline({
+      path: myTrail.map(p => [p.lng, p.lat]),
+      strokeColor: '#5FCBB2', strokeWeight: 4, strokeOpacity: 0.6,
+      strokeStyle: 'dashed', strokeDasharray: [1, 9], lineJoin: 'round', lineCap: 'round',
+      zIndex: 150, map: amap
+    });
   }
 }
 
@@ -960,8 +1011,10 @@ function renderMe() {
       <input type="checkbox" id="swTheme" ${S.theme === 'night' ? 'checked' : ''}></div>
     <div class="sw"><div class="k">卫星地图</div>
       <input type="checkbox" id="swSat" ${S.layer === 'sat' ? 'checked' : ''}></div>
-    <div class="sw"><div class="k">高清地图<em>更清晰 · 费流量</em></div>
-      <input type="checkbox" id="swHD" ${S.hd !== false ? 'checked' : ''}></div>
+    <div class="k" style="padding:6px 0 8px">地图配色<em>矢量渲染 · 和高德 App 同一套</em></div>
+    <div class="mchips" id="styleChips">
+      ${MAP_STYLES.map(o => `<button class="mchip ${(S.mapStyle || 'macaron') === o[0] ? 'on' : ''}" data-s="${o[0]}">${o[1]}</button>`).join('')}
+    </div>
     <div class="btngrid" style="margin-top:8px">
       <button class="btn sm ghost" id="btnDemo">${Kitty.glyph('eye', 15)} ${S.demo ? '关闭演示模式' : '看看演示效果'}</button>
       <button class="btn sm line" id="btnReset">重来一遍引导</button>
@@ -1038,7 +1091,13 @@ function renderMe() {
   };
   $('#swTheme').onchange = e => { S.theme = e.target.checked ? 'night' : 'day'; save(); applyTheme(); };
   $('#swSat').onchange = e => { S.layer = e.target.checked ? 'sat' : 'std'; save(); applyLayer(); };
-  $('#swHD').onchange = e => { S.hd = e.target.checked; save(); applyLayer(); };
+  $('#swHD') && ($('#swHD').onchange = e => { S.hd = e.target.checked; save(); applyLayer(); });
+  const chips = $('#styleChips');
+  if (chips) chips.addEventListener('click', e => {
+    const b = e.target.closest('.mchip'); if (!b) return;
+    S.mapStyle = b.dataset.s; save(); applyLayer();
+    chips.querySelectorAll('.mchip').forEach(c => c.classList.toggle('on', c === b));
+  });
   $('#btnDemo').onclick = () => { if (S.demo) stopDemo(); else startDemo(); renderMe(); };
   $('#btnReset').onclick = () => { if (confirm('重新走一遍引导？')) { openWelcome(); } };
 
@@ -1068,6 +1127,7 @@ function renderMe() {
 function applyTheme() {
   const night = S.theme === 'night';
   document.documentElement.dataset.theme = night ? 'night' : 'day';
+  if (amap) { try { amap.setMapStyle(mapStyleId()); } catch (e) {} }
   try { if (window.LKLX && LKLX.bars) LKLX.bars(night ? 'night' : 'day'); } catch (e) {}
 }
 

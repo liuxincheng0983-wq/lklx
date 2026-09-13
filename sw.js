@@ -1,15 +1,13 @@
 /* 两颗心 · 离线兜底 Service Worker
    目标：第一次成功打开后，应用外壳永久常驻本机。
    之后即便 GitHub Pages 打不开，页面照样启动。 */
-var CACHE = 'lklx-v7';
+var CACHE = 'lklx-v8';
 var SHELL = [
   './',
   'index.html',
-  'app.js?v=3',
-  'kitty.js?v=3',
-  'style.css?v=3',
-  'vendor/leaflet.js',
-  'vendor/leaflet.css',
+  'app.js?v=8',
+  'kitty.js?v=8',
+  'style.css?v=8',
   'manifest.json',
   'icon-192.png',
   'icon-180.png'
@@ -36,7 +34,8 @@ self.addEventListener('activate', function (e) {
   );
 });
 
-function isTile(u) { return u.indexOf('autonavi.com') >= 0; }
+function isTile(u) { return u.indexOf('autonavi.com') >= 0 || u.indexOf('vdata.amap.com') >= 0
+         || u.indexOf('webapi.amap.com') >= 0 || u.indexOf('amappluss.alicdn.com') >= 0; }
 function isRelay(u) { return u.indexOf('ntfy.sh') >= 0; }
 
 self.addEventListener('fetch', function (e) {

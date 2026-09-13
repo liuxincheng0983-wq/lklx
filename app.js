@@ -577,6 +577,19 @@ function geoBarHide() { const el = $('#geoBar'); if (el) el.hidden = true; }
 
 /* 用户点击后调用：这一步带着手势，iOS 才会弹权限框 */
 function askGeo() {
+  if (hasNative()) {                 // 安卓壳：定位交给后台服务，不用浏览器权限
+    let o = null;
+    try { o = JSON.parse(LKLX.geo() || 'null'); } catch (e) {}
+    if (o && o.err) {
+      geoBar('<b>手机还没定位到</b>' + esc(o.err) +
+        '<br>确认系统「位置信息」是开着的，并且允许「两颗心」使用位置，然后重试',
+        '重试', askGeo, 'warn');
+      return;
+    }
+    geoBarHide();
+    startNativeGeo();
+    return;
+  }
   if (!navigator.geolocation) {
     geoBar('<b>这台设备不支持定位</b>', null, null, 'warn');
     return;
@@ -622,23 +635,73 @@ function geoStage() {
   return geoState === 'ok' ? '运行中丢失' : '未授权';
 }
 
+/* —— 安卓版 App 里的原生定位 ——
+   壳子里本来就跑着一个后台定位服务（和「后台补点」用的是同一个），比浏览器的
+   geolocation 稳得多：WebView、内置浏览器经常把网页定位请求无声拒掉，用户
+   明明授权了也拿不到位置。原生给的坐标已经是 GCJ-02，直接用，不要再纠偏。 */
+function nativeFix() {
+  if (typeof LKLX === 'undefined' || !LKLX || !LKLX.geo) return null;
+  try {
+    const o = JSON.parse(LKLX.geo() || 'null');
+    if (!o || !o.ok || !o.lat) return null;
+    return { lat: o.lat, lng: o.lon, acc: o.ac || 0, speed: o.sp || 0, at: o.t || Date.now() };
+  } catch (e) { return null; }
+}
+function nativeSharing() {
+  try { return typeof LKLX !== 'undefined' && !!LKLX && !!LKLX.sharing && LKLX.sharing() === '1'; }
+  catch (e) { return false; }
+}
+
+/* 拿到一个位置之后要做的所有事 —— 浏览器定位和原生定位两条路共用 */
+function applyFix(lat, lng, acc, speed, raw) {
+  geoState = 'ok'; geoBarHide();
+  me = { lat: lat, lng: lng, raw: raw || null, acc: acc, speed: speed, head: null, at: Date.now() };
+  upsertMe(me.lat, me.lng);
+  if (!peer && map && !map._inited) { map.setView([me.lat, me.lng], 15); map._inited = true; }
+  if (S.trail) {
+    myTrail.push({ lat: me.lat, lng: me.lng, t: Date.now() });
+    if (myTrail.length > 400) myTrail.shift();
+    drawTrail();
+  }
+  renderPeer();
+  const chip = $('#gpsChip');
+  if (chip) chip.textContent = '±' + Math.round(acc || 0) + 'm';
+}
+
+let natTimer = null, natMiss = 0, natFellBack = false;
+function startNativeGeo() {
+  if (natTimer) clearInterval(natTimer);
+  const tick = () => {
+    const f = nativeFix();
+    if (f) {
+      natMiss = 0;
+      applyFix(f.lat, f.lng, f.acc, f.speed, null);
+    } else if (++natMiss === 6 && !natFellBack) {
+      // 壳子里等了 20 秒还没等到原生定位（后台服务可能没起来或被系统停了），
+      // 退回浏览器定位兜底 —— 两条路都不行时才提示用户。
+      natFellBack = true;
+      browserGeo();
+    }
+    quotaRefreshHint();
+  };
+  tick();
+  natTimer = setInterval(tick, 4000);
+}
+
 function startGeo() {
+  // 安卓壳（两颗心 App）里有后台定位服务，优先用它 —— WebView 里浏览器自己的
+  // 定位经常被无声拒绝，用户明明授权了也拿不到点。
+  if (hasNative()) { startNativeGeo(); return; }
+  browserGeo();
+}
+
+function browserGeo() {
   if (!navigator.geolocation) { onGeoErr({ code: 2 }); return; }
   if (watchId != null) { try { navigator.geolocation.clearWatch(watchId); } catch (e) {} }
   watchId = navigator.geolocation.watchPosition(pos => {
-    geoState = 'ok'; geoBarHide();
     const c = pos.coords;
     const g = GCJ.wgs2gcj(c.latitude, c.longitude);
-    me = { lat: g[0], lng: g[1], raw: [c.latitude, c.longitude], acc: c.accuracy, speed: c.speed, head: c.heading, at: Date.now() };
-    upsertMe(me.lat, me.lng);
-    if (!peer && map && !map._inited) { map.setView([me.lat, me.lng], 15); map._inited = true; }
-    if (S.trail) {
-      myTrail.push({ lat: me.lat, lng: me.lng, t: Date.now() });
-      if (myTrail.length > 400) myTrail.shift();
-      drawTrail();
-    }
-    renderPeer();
-    $('#gpsChip') && ($('#gpsChip').textContent = '±' + Math.round(c.accuracy) + 'm');
+    applyFix(g[0], g[1], c.accuracy, c.speed, [c.latitude, c.longitude]);
   }, err => {
     // 拿不到定位时绝不伪造坐标 —— 否则对方会看到你在广州。
     if (geoState !== 'ok') onGeoErr(err);
@@ -669,7 +732,20 @@ function quotaToday() {
   } catch (e) {}
   return q;
 }
-function quotaLeft() { return Math.max(0, QUOTA_DAY - quotaToday().n); }
+function quotaLeft() {
+  // 安卓壳里真正在发位置的是后台服务，额度要问它，本地计数器看不到那部分
+  if (nativeSharing()) {
+    try {
+      const o = JSON.parse(LKLX.geo() || 'null');
+      if (o && typeof o.q === 'number') return o.q;
+    } catch (e) {}
+  }
+  return Math.max(0, QUOTA_DAY - quotaToday().n);
+}
+function quotaRefreshHint() {
+  const el = document.getElementById('quotaHint');
+  if (el) el.textContent = '今日剩余 ' + quotaLeft() + ' 条';
+}
 function quotaSpend() {
   const q = quotaToday(); q.n++;
   try { localStorage.setItem('lklx.quota', JSON.stringify(q)); } catch (e) {}
@@ -704,6 +780,9 @@ function beatGapMs() {
 async function pubPos(force) {
   if (!me || !S.room || S.demo) return;
   if (me.fake) return;   // 绝不把伪造坐标发出去
+  // 安卓壳里后台服务自己会上报位置（关屏也照发），网页端再发一遍等于
+  // 把每天 250 条的免费额度翻倍烧掉。既然原生在发，这里就只管显示。
+  if (nativeSharing()) { setConn('on'); pubFail = 0; return; }
   if (!force && quotaLeft() <= 0) return;   // 额度用完就只收不发
 
   const now = Date.now();

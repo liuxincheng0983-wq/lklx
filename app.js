@@ -92,7 +92,8 @@ const Crypto_ = (function () {
 const DEFAULT = {
   name: '', room: '', avatar: { t: 'k', c: '#FF6B9D' },
   theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true,
-  trail: true, notify: false, sound: true, welcome: false, demo: false
+  trail: true, notify: false, sound: true, welcome: false, demo: false,
+  otrack: true
 };
 const S = Object.assign({}, DEFAULT, load('lklx.cfg') || {});
 let me = null;              // 我的真实位置(GCJ)
@@ -343,17 +344,46 @@ async function onRaw(message) {
     catch (e) { return; }   // 别人的消息 / 暗号不对
   }
   let o; try { o = JSON.parse(txt); } catch (e) { return; }
-  if (!o || o.id === myId()) return;
+  if (!o) return;
+  // iPhone 锁屏时的后台补点：OwnTracks 发来的原始报文
+  if (o._type !== undefined || (!o.k && typeof o.lat === 'number' && typeof o.lon === 'number')) {
+    if (S.otrack === false) return;
+    o = fromOwnTracks(o);
+    if (!o) return;
+  }
+  if (o.id === myId()) return;
   if (o.k === 'pos') onPeerPos(o);
   else if (o.k === 'msg') onPeerMsg(o);
   else if (o.k === 'sos') onPeerSos(o);
+}
+/* OwnTracks 报的是原始 GPS（WGS84）且不经加密，
+   必须转成 GCJ-02 才能跟高德地图的底图对上。 */
+function fromOwnTracks(o) {
+  if (o._type && o._type !== 'location') return null;   // transition / lwt 等忽略
+  const la = +o.lat, lo = +o.lon;
+  if (!isFinite(la) || !isFinite(lo) || !GCJ.ok(la, lo)) return null;
+  const g = GCJ.wgs2gcj(la, lo);
+  const ts = +(o.tst || o.t || 0);
+  return {
+    k: 'pos', id: 'ot:' + (o.tid || 'peer'), n: o.name || '', av: null,
+    lat: +g[0].toFixed(6), lon: +g[1].toFixed(6),
+    ac: o.acc ? Math.round(o.acc) : 0,
+    sp: o.vel ? +(+o.vel).toFixed(1) : 0,
+    b: (typeof o.batt === 'number' && o.batt >= 0) ? Math.round(o.batt) : null,
+    cg: null,
+    t: ts ? ts * 1000 : Date.now(),
+    ot: 1
+  };
 }
 function onPeerPos(o) {
   if (!GCJ.ok(o.lat, o.lon)) return;
   const fresh = !peer || o.t > peer.t;
   peer = {
-    lat: o.lat, lng: o.lon, av: o.av, n: o.n,
-    acc: o.ac, speed: o.sp, batt: o.b, chg: o.cg, at: Date.now(), t: o.t
+    lat: o.lat, lng: o.lon,
+    av: o.av || (peer && peer.av) || null,
+    n: o.n || (peer && peer.n) || '',
+    acc: o.ac, speed: o.sp, batt: o.b, chg: o.cg,
+    ot: !!o.ot, at: Date.now(), t: o.t
   };
   if (fresh) {
     if (S.trail) {
@@ -582,7 +612,8 @@ function renderPeer() {
   const dstr = fmtDist(m);
   $d.innerHTML = dstr[0] + (dstr[1] ? '<small>' + dstr[1] + '</small>' : '');
   $dl.textContent = '距离你';
-  $sb.innerHTML = '<b>' + ago(peer.at) + '</b>更新 · ' + (online ? '在线' : '可能没在看手机');
+  $sb.innerHTML = '<b>' + ago(peer.at) + '</b>更新 · ' + (online ? '在线' : '可能没在看手机')
+    + (peer.ot ? ' · <span style="color:#E8590C;font-weight:700">后台补点</span>' : '');
   renderPeerPanel(m);
 }
 function renderPeerPanel(m) {
@@ -760,9 +791,23 @@ function renderMe() {
       <div class="k">提示音<em>她发消息时响一下</em></div>
       <input type="checkbox" id="swSound" ${S.sound ? 'checked' : ''}>
     </div>
+    <div class="sw">
+      <div class="k">接收 iPhone 后台补点<em>OwnTracks 格式的原始报文</em></div>
+      <input type="checkbox" id="swOT" ${S.otrack !== false ? 'checked' : ''}>
+    </div>
     <div class="note" style="margin-top:8px">
-      手机上如果把这个页面切到后台，定位会暂停。想让它在锁屏时也一直更新，
-      用我做的安卓版 App（带常驻服务），iPhone 用「快捷指令」做后台补点。
+      网页切到后台后定位会被系统暂停 —— 这是手机的限制，不是应用坏了。<br><br>
+      <b>安卓</b>：用我做的安卓版 App（带常驻服务），锁屏也一直更新。<br>
+      <b>iPhone</b>：装免费的 <b>OwnTracks</b>，它能在后台持续上报位置。<br><br>
+      设置路径：打开 OwnTracks → 右上角 <b>+</b> → 模式选 <b>HTTP</b> →
+      地址填下面这行 → 其它保持默认即可。
+      <div style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(0,0,0,.06);
+        font-size:11px;word-break:break-all;line-height:1.5">${'https://ntfy.sh/' + (S.room ? encodeURIComponent(S.room) : '（先设置暗号）')}</div>
+      <button class="btn sm line" id="btnOtCopy" style="margin-top:6px">复制这行地址</button>
+      <div class="hint" style="margin-top:6px">
+        后台补点走的是<b>未加密</b>通道（OwnTracks 本身不支持加密），
+        但地址里的那一串就是你们的暗号，别人猜不到。介意就把上面的开关关掉。
+      </div>
     </div>
   </div>
 
@@ -823,6 +868,16 @@ function renderMe() {
     S.notify = e.target.checked; save();
   };
   $('#swSound').onchange = e => { S.sound = e.target.checked; save(); };
+  $('#swOT').onchange = e => {
+    S.otrack = e.target.checked; save();
+    toast(S.otrack ? '已开启：接收 iPhone 后台补点' : '已忽略后台补点');
+  };
+  $('#btnOtCopy').onclick = async () => {
+    if (!S.room) return toast('先设置暗号');
+    const u = 'https://ntfy.sh/' + encodeURIComponent(S.room);
+    try { await navigator.clipboard.writeText(u); toast('已复制，粘到 OwnTracks 的地址栏', true); }
+    catch (e) { prompt('复制下面这行：', u); }
+  };
   $('#swTheme').onchange = e => { S.theme = e.target.checked ? 'night' : 'day'; save(); applyTheme(); };
   $('#swSat').onchange = e => { S.layer = e.target.checked ? 'sat' : 'std'; save(); applyLayer(); };
   $('#swHD').onchange = e => { S.hd = e.target.checked; save(); applyLayer(); };

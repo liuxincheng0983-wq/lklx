@@ -573,9 +573,73 @@ async function battery() {
     return { level: Math.round(b.level * 100), charging: b.charging };
   } catch (e) { return null; }
 }
-async function pubPos() {
+/* ntfy.sh 免费额度每天只有 250 条消息。旧实现每 8 秒无条件发一条 = 一天 10800 条，
+   大约半小时就烧光额度，之后位置彻底不再更新，而且不会报任何错。
+   这里改成：只在真的移动时才发 + 静止时低频保活，并按剩余额度自动放慢。 */
+const QUOTA_DAY = 240;          // 留 10 条余量给握手和手动刷新
+const MOVE_M = 35;              // 位移超过 35 米才算「动了」
+const CHECK_MS = 10000;         // 每 10 秒检查一次（检查 ≠ 发送）
+let qLastPt = null, qLastAt = 0;
+
+function quotaToday() {
+  const d = new Date().toISOString().slice(0, 10);
+  let q = { d: d, n: 0 };
+  try {
+    const s = JSON.parse(localStorage.getItem('lklx.quota') || 'null');
+    if (s && s.d === d) q = s;
+  } catch (e) {}
+  return q;
+}
+function quotaLeft() { return Math.max(0, QUOTA_DAY - quotaToday().n); }
+function quotaSpend() {
+  const q = quotaToday(); q.n++;
+  try { localStorage.setItem('lklx.quota', JSON.stringify(q)); } catch (e) {}
+  const el = document.getElementById('quotaHint');
+  if (el) el.textContent = '今日剩余 ' + quotaLeft() + ' 条';
+}
+function hoursLeftToday() {
+  const n = new Date();
+  return Math.max(0.5, 24 - (n.getHours() + n.getMinutes() / 60));
+}
+/* 额度越少，两次发送的间隔越长 —— 自动把额度摊到剩下的一天里 */
+function pubGapMs() {
+  const left = quotaLeft();
+  if (left <= 0) return Infinity;
+  const perHour = left / hoursLeftToday();
+  if (perHour >= 30) return Math.max(5000, (S.interval || 8) * 1000);
+  if (perHour >= 12) return 20000;
+  if (perHour >= 5) return 45000;
+  if (perHour >= 2) return 90000;
+  return 150000;
+}
+function beatGapMs() {
+  const left = quotaLeft();
+  if (left <= 0) return Infinity;
+  const perHour = left / hoursLeftToday();
+  if (perHour >= 8) return 10 * 60 * 1000;
+  if (perHour >= 3) return 20 * 60 * 1000;
+  if (perHour >= 1) return 35 * 60 * 1000;
+  return 50 * 60 * 1000;
+}
+
+async function pubPos(force) {
   if (!me || !S.room || S.demo) return;
   if (me.fake) return;   // 绝不把伪造坐标发出去
+  if (!force && quotaLeft() <= 0) return;   // 额度用完就只收不发
+
+  const now = Date.now();
+  const since = now - qLastAt;
+  if (!force) {
+    const moved = qLastPt ? haversine(qLastPt, me) : Infinity;
+    if (moved >= MOVE_M) {
+      if (since < pubGapMs()) return;       // 移动也受额度节流
+    } else if (since < beatGapMs()) {
+      return;                               // 没动、又没到心跳时间 → 不发
+    }
+  }
+  qLastPt = { lat: me.lat, lng: me.lng };
+  qLastAt = now;
+  quotaSpend();
   const b = await battery();
   publish({
     v: 1, k: 'pos', id: myId(), n: S.name || '我', av: S.avatar,
@@ -586,13 +650,10 @@ async function pubPos() {
 }
 function restartPub() {
   clearInterval(pubTimer);
+  qLastPt = null;
   if (S.demo || !S.room) return;
-  pubPos();
-  pubTimer = setInterval(() => {
-    const idle = !peer || (Date.now() - peer.at > 90000);
-    pubPos();
-    if (idle) {} // 保持心跳
-  }, Math.max(5, S.interval) * 1000);
+  pubPos(true);                                  // 启动时先报一次位置
+  pubTimer = setInterval(() => pubPos(false), CHECK_MS);
 }
 
 /* ============ 9. 轨迹 ============ */
@@ -858,6 +919,8 @@ function renderMe() {
       <input type="range" id="inInt" min="5" max="60" step="1" value="${S.interval}"
         style="width:100%;padding:0;background:none;border:none">
       <div class="hint">越快越实时，也越费电。建议走路 8 秒、宅家 30 秒。</div>
+      <div class="hint" style="margin-top:6px;font-weight:700" id="quotaHint">今日剩余 ${quotaLeft()} 条</div>
+      <div class="hint">只在真的移动时才发位置（静止时约 10 分钟一条保活）。免费通道每天上限 ${QUOTA_DAY} 条，快用完时会自动放慢，不会突然断掉。</div>
     </div>
     <div class="sw">
       <div class="k">记录轨迹<em>保存对方走过的路线</em></div>
@@ -917,7 +980,7 @@ function renderMe() {
   </div>`;
 
   // 绑定
-  $('#inName').onchange = e => { S.name = e.target.value.trim(); save(); if (me) upsertMe(me.lat, me.lng); pubPos(); };
+  $('#inName').onchange = e => { S.name = e.target.value.trim(); save(); if (me) upsertMe(me.lat, me.lng); pubPos(true); };
   // 暗号：边打边存 + 显式保存，不再只依赖 change（iOS 上失焦时机不可靠）
   let roomTimer = null;
   const commitRoom = v => {
@@ -981,7 +1044,7 @@ function renderMe() {
 
   $$('#swatches .swatch').forEach(b => b.onclick = () => {
     S.avatar = { t: 'k', c: b.dataset.c }; save(); renderMe();
-    if (me) upsertMe(me.lat, me.lng); pubPos();
+    if (me) upsertMe(me.lat, me.lng); pubPos(true);
   });
   $('#btnPhoto').onclick = () => $('#fileAv').click();
   $('#fileAv').onchange = e => {
@@ -994,7 +1057,7 @@ function renderMe() {
         const s = Math.min(img.width, img.height);
         c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 256, 256);
         S.avatar = { t: 'p', data: c.toDataURL('image/jpeg', 0.82) };
-        save(); renderMe(); if (me) upsertMe(me.lat, me.lng); pubPos();
+        save(); renderMe(); if (me) upsertMe(me.lat, me.lng); pubPos(true);
         toast('头像已更换', true);
       };
       img.src = rd.result;
@@ -1329,8 +1392,8 @@ function boot() {
     lock();
     document.addEventListener('visibilitychange', () => { if (!document.hidden) lock(); });
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { catchUp(); if (me) pubPos(); } });
-  window.addEventListener('online', () => { connect(); pubPos(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { catchUp(); if (me) pubPos(true); } });
+  window.addEventListener('online', () => { connect(); pubPos(true); });
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();

@@ -125,9 +125,9 @@ function nativePush() {
   } catch (e) {}
 }
 function save() {
-  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd } = S;
+  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
-    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd }));
+    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack }));
   nativePush();
 }
 

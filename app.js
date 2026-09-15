@@ -163,9 +163,11 @@ function nativePush() {
   } catch (e) {}
 }
 function save() {
-  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle } = S;
+  const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
+    relay, relayToken, places, reportPeer, focusUntil } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
-    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle }));
+    { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
+      relay, relayToken, places, reportPeer, focusUntil }));
   nativePush();
 }
 
@@ -1902,6 +1904,29 @@ function tick() {
     }
   }
 }
+/* 页面报错时直接在屏幕上写出来 —— 手机上没有控制台，
+   不这么做就只能看到"白屏"或者半截界面，完全没法排查。 */
+function fatalBar(msg) {
+  try {
+    let el = document.getElementById('fatalBar');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'fatalBar';
+      el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;background:#B00020;'
+        + 'color:#fff;font:600 12.5px/1.45 monospace;padding:8px 10px;white-space:pre-wrap;'
+        + 'word-break:break-all;max-height:42%;overflow:auto';
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = '页面出错（请把这张截图发给我）：\n' + msg;
+  } catch (e) {}
+}
+window.addEventListener('error', e => {
+  fatalBar((e.message || 'unknown') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || 0));
+});
+window.addEventListener('unhandledrejection', e => {
+  fatalBar('Promise: ' + String((e.reason && e.reason.message) || e.reason).slice(0, 200));
+});
+
 function boot() {
   applyTheme();
   initMap();

@@ -8,6 +8,19 @@
 'use strict';
 
 const NTFY = 'https://ntfy.sh';
+/* 公共 ntfy.sh 每天只有 250 条额度，自建服务器就没这个限制。
+   设置里填了地址就用自建的，接口和 ntfy 完全一致（见 relay/ 目录的服务端）。 */
+function relayBase() {
+  let u = (S.relay || '').trim().replace(/\/+$/, '');
+  if (!u) return NTFY;
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return u;
+}
+function relayHeaders() {
+  const h = { 'Content-Type': 'text/plain' };
+  if (S.relayToken) h['Authorization'] = 'Bearer ' + S.relayToken;
+  return h;
+}
 const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 
@@ -112,7 +125,12 @@ const DEFAULT = {
   name: '', room: '', avatar: { t: 'k', c: '#FF6B9D' },
   theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true, mapStyle: 'macaron',
   trail: true, notify: false, sound: true, welcome: false, demo: false,
-  otrack: true
+  otrack: true,
+  relay: '',          // 自建服务器地址（留空用公共 ntfy.sh）
+  relayToken: '',     // 自建服务器的口令（可选）
+  places: [],         // 报备地点 [{id,n,lat,lng,r,on}]
+  reportPeer: true,   // 到达/离开要不要发消息告诉对方
+  focusUntil: 0       // 专注时刻结束时间戳（此期间自己的提醒静音）
 };
 const S = Object.assign({}, DEFAULT, load('lklx.cfg') || {});
 let me = null;              // 我的真实位置(GCJ)
@@ -361,8 +379,8 @@ async function publish(obj) {
     }
   }
   try {
-    const r = await fetch(NTFY + '/' + topicOf(S.room), {
-      method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: body
+    const r = await fetch(relayBase() + '/' + topicOf(S.room), {
+      method: 'POST', headers: relayHeaders(), body: body
     });
     if (r.ok) { pubFail = 0; setConn('on'); } else { failConn(); }
   } catch (e) { failConn(); }
@@ -418,6 +436,41 @@ async function onRaw(message) {
   if (o.k === 'pos') onPeerPos(o);
   else if (o.k === 'msg') onPeerMsg(o);
   else if (o.k === 'sos') onPeerSos(o);
+  else if (o.k === 'rep') onPeerReport(o);
+  else if (o.k === 'focus') onFocusAsk(o);
+  else if (o.k === 'focusOk') onFocusOk(o);
+}
+/* 对方到某地/离开某地的自动报备 */
+function onPeerReport(o) {
+  const nm = peer && peer.n ? peer.n : (o.n || '她');
+  const pname = o.place || '某个地方';
+  const title = o.enter ? '💕 ' + nm + '到了 · ' + pname : '👋 ' + nm + '离开了 · ' + pname;
+  showNote(title, o.enter ? '刚刚到的，一切顺利' : '刚出发，路上小心', o.enter ? 'ok' : '');
+  chat.push({ me: false, text: (o.enter ? '📍 我到' : '🚶 我离开') + pname, t: Date.now() });
+  renderChat();
+  notifyLocal(title, o.enter ? '她到达了报备地点' : '她离开了报备地点');
+  if (S.sound) blip();
+}
+/* 她请求一段专注时刻：我这边确认后，通知会静音一会儿 */
+function onFocusAsk(o) {
+  const min = Math.max(5, Math.min(180, o.min || 30));
+  const nm = peer && peer.n ? peer.n : (o.n || '她');
+  showNote('🤫 ' + nm + '想要 ' + min + ' 分钟专注时刻',
+    '点一下同意，你的提醒会安静 ' + min + ' 分钟', 'ask', [
+      { t: '同意', fn: () => {
+        S.focusUntil = Date.now() + min * 60000; save();
+        publish({ v: 1, k: 'focusOk', id: myId(), n: S.name || '我', min, t: Date.now() });
+        showNote('已进入专注时刻', '接下来 ' + min + ' 分钟不打扰你', 'ok');
+      } },
+      { t: '再说吧', fn: () => hideNote() }
+    ]);
+}
+function onFocusOk(o) {
+  if (o.id === myId()) return;
+  const nm = peer && peer.n ? peer.n : (o.n || '她');
+  showNote('✅ ' + nm + '答应了专注时刻', '这 ' + (o.min || 30) + ' 分钟里她不会被打扰', 'ok');
+  chat.push({ me: false, text: '✅ 同意专注 ' + (o.min || 30) + ' 分钟', t: Date.now() });
+  renderChat();
 }
 /* OwnTracks 报的是原始 GPS（WGS84）且不经加密，
    必须转成 GCJ-02 才能跟高德地图的底图对上。 */
@@ -496,7 +549,8 @@ function connect() {
   if (!S.room || S.demo) { setConn(S.demo ? 'demo' : ''); return; }
   setConn('');
   try {
-    es = new EventSource(NTFY + '/' + topicOf(S.room) + '/sse');
+    const q = S.relayToken ? ('?auth=' + encodeURIComponent(S.relayToken)) : '';
+    es = new EventSource(relayBase() + '/' + topicOf(S.room) + '/sse' + q);
     es.onopen = () => { setConn('on'); };
     es.onmessage = ev => {
       setConn('on');
@@ -514,7 +568,7 @@ function connect() {
 async function catchUp() {
   if (!S.room || S.demo) return;
   try {
-    const r = await fetch(NTFY + '/' + topicOf(S.room) + '/json?poll=1&since=6h');
+    const r = await fetch(relayBase() + '/' + topicOf(S.room) + '/json?poll=1&since=6h', { headers: relayHeaders() });
     const lines = (await r.text()).trim().split('\n').filter(Boolean);
     for (const ln of lines) {
       let d; try { d = JSON.parse(ln); } catch (e) { continue; }
@@ -918,21 +972,43 @@ function renderPeer() {
   $dl.textContent = '距离你';
   $sb.innerHTML = '<b>' + ago(peer.at) + '</b>更新 · ' + (online ? '在线' : '可能没在看手机')
     + (peer.ot ? ' · <span style="color:#E8590C;font-weight:700">后台补点</span>' : '');
-  renderPeerPanel(m);
+  /* 面板内容一秒一刷会把滚动位置和开关状态冲掉，
+     所以只在内容真的变了（按分钟）时才重建，并保住滚动位置。 */
+  const sig = [peer.lat, peer.lng, peer.at - (peer.at % 60000), peer.batt, peer.chg,
+    peer.speed, peer.acc, focusLeft(),
+    (S.places || []).map(p => p.id + p.on + (p.in ? 1 : 0)).join()]
+    .join('|');
+  if (sig !== peerPanelSig) {
+    peerPanelSig = sig;
+    const box = $('#panels');
+    const top = box ? box.scrollTop : 0;
+    renderPeerPanel(m);
+    if (box) box.scrollTop = top;
+  }
 }
+let peerPanelSig = '';
 function renderPeerPanel(m) {
   const $p = $('#panelPeer');
   const b = peer.batt;
   const batTxt = b == null ? '未知' : b + '%' + (peer.chg ? ' · 充电中' : '');
+  const batBar = b == null ? '' :
+    `<div style="height:6px;border-radius:4px;background:var(--p100);margin-top:7px;overflow:hidden">
+       <div style="height:100%;width:${Math.max(4, Math.min(100, b))}%;border-radius:4px;
+         background:linear-gradient(90deg,${b <= 20 ? '#FF4D6D,#F0334F' : 'var(--p400),var(--p600)'})"></div>
+     </div>`;
   const dstr = fmtDist(m);
-  const nav = (name, fn) => `<div class="row"><div class="ic">${Kitty.glyph(name, 16)}</div><div class="k">${name}</div></div>`;
+  const idleMin = peer.at ? Math.round((Date.now() - peer.at) / 60000) : null;
+  const fLeft = focusLeft();
+
   $p.innerHTML = `
   <div class="card">
-    <h4>${Kitty.heart('#FF6B9D', 13)} 对方状态</h4>
+    <h4>${Kitty.heart('#FF6B9D', 13)} 她现在</h4>
     <div class="row"><div class="ic">${Kitty.glyph('battery', 16)}</div>
-      <div class="k">手机电量</div><div class="v">${esc(batTxt)}</div></div>
-    <div class="row"><div class="ic">${Kitty.glyph('clock', 16)}</div>
-      <div class="k">最后更新<em>${peer.t ? hhmm(peer.t) : ''}</em></div>
+      <div class="k">手机电量<em>${peer.chg ? '正在充电' : '没在充电'}</em></div>
+      <div class="v">${esc(b == null ? '未知' : b + '%')}</div></div>
+    ${batBar}
+    <div class="row" style="border:none"><div class="ic">${Kitty.glyph('clock', 16)}</div>
+      <div class="k">最后更新${idleMin != null && idleMin < 2 ? '<em>刚刚</em>' : ''}</div>
       <div class="v">${ago(peer.at)}</div></div>
     <div class="row"><div class="ic">${Kitty.glyph('speed', 16)}</div>
       <div class="k">移动速度</div>
@@ -940,21 +1016,35 @@ function renderPeerPanel(m) {
     <div class="row"><div class="ic">${Kitty.glyph('gps', 16)}</div>
       <div class="k">定位精度</div><div class="v">${peer.acc ? '±' + peer.acc + ' m' : '—'}</div></div>
   </div>
+
+  <div class="card">
+    <h4>${Kitty.glyph('bell', 13)} 自动报备
+      <span style="margin-left:auto;font-size:11px;color:var(--ink3)">她到了/离开，我收到提醒</span></h4>
+    <div id="placeList"></div>
+  </div>
+
   <div class="card">
     <h4>${Kitty.heart('#FF6B9D', 13)} 快捷操作</h4>
     <div class="btngrid" style="margin-bottom:9px">
       <button class="btn sm" id="btnNav">${Kitty.glyph('nav', 15, '#fff')} 导航去她那</button>
       <button class="btn sm ghost" id="btnCenter">${Kitty.glyph('eye', 15)} 地图上看她</button>
     </div>
-    <div class="btngrid">
+    <div class="btngrid" style="margin-bottom:9px">
       <button class="btn sm ghost" id="btnNear">${Kitty.glyph('bell', 15)} ${dstr[0]}${dstr[1]}到了</button>
-      <button class="btn sm danger" id="btnSos">${Kitty.glyph('sos', 15, '#fff')} 一键 SOS</button>
+      <button class="btn sm ghost" id="btnFocus">🤫 请求专注时刻</button>
     </div>
+    <div class="btngrid">
+      <button class="btn sm danger" id="btnSos">${Kitty.glyph('sos', 15, '#fff')} 一键 SOS</button>
+      <button class="btn sm line" id="btnPoke2">${Kitty.heart('#F24E86', 15)} 戳一戳</button>
+    </div>
+    ${fLeft ? `<div class="note" style="margin-top:11px">🤫 专注时刻中，还有 ${fLeft} 分钟 —— 这期间的提醒会安静下来</div>` : ''}
     <div class="note" style="margin-top:11px">
       已开启<b>端到端加密</b>：位置和消息在你的手机上加密后才发出，
-      即使经过公共服务器别人也读不懂内容。
+      即使经过服务器别人也读不懂内容。
     </div>
   </div>`;
+
+  renderPlaces();
 
   $('#btnNav').onclick = () => {
     const g = GCJ.gcj2wgs(peer.lat, peer.lng);
@@ -973,6 +1063,13 @@ function renderPeerPanel(m) {
     toast('已设置：到达对方 ' + km + ' 公里内提醒（保持本页开启）', true);
     nearWatch = { target: km * 1000, fired: false };
   };
+  $('#btnFocus').onclick = () => {
+    const v = prompt('想安静多久？（分钟，5-180）', '30');
+    if (v == null) return;
+    const min = Math.max(5, Math.min(180, parseInt(v, 10) || 30));
+    requestFocus(min);
+  };
+  $('#btnPoke2').onclick = () => sendPoke('想你啦 💕', true);
   $('#btnSos').onclick = () => {
     if (!confirm('确定向对方发送 SOS 求助吗？')) return;
     publish({ v: 1, k: 'sos', id: myId(), n: S.name || '我', t: Date.now() });
@@ -984,23 +1081,38 @@ function renderPeerPanel(m) {
 let nearWatch = null;
 
 function renderTrailPanel() {
-  const pts = S.demo ? peerHistory : peerHistory;
+  const pts = peerHistory;
   const $t = $('#panelTrail');
   if (!pts.length) {
     $t.innerHTML = `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
-      <div>还没有轨迹记录</div>
-      <div style="font-size:11.5px;margin-top:6px">开启轨迹后，会记录你们走过的地方</div></div>`;
+      <div>还没有足迹</div>
+      <div style="font-size:11.5px;margin-top:6px">双方都开着页面时，会记下走过的地方</div></div>`;
     return;
   }
-  const recent = pts.slice(-14).reverse();
-  $t.innerHTML = `
+  const st = trailStats(pts);
+  const statCard = st ? `
   <div class="card">
-    <h4>${Kitty.heart('#FF6B9D', 13)} 轨迹记录</h4>
-    <div class="sw"><div class="k">记录轨迹<em>共 ${pts.length} 个点</em></div>
+    <h4>${Kitty.heart('#FF6B9D', 13)} 这段日子</h4>
+    <div class="statgrid">
+      <div class="stat"><div class="n">${st.km < 10 ? st.km.toFixed(1) : Math.round(st.km)}<small>km</small></div><div class="l">走过的路</div></div>
+      <div class="stat"><div class="n">${st.spots}</div><div class="l">去过的地方</div></div>
+      <div class="stat"><div class="n">${st.hours < 1 ? '<1' : Math.round(st.hours)}<small>h</small></div><div class="l">记录时长</div></div>
+    </div>
+    <div class="tagrow">
+      <span class="tag">共 ${st.n} 个定位点</span>
+      <span class="tag">从 ${hhmm(st.first)} 开始</span>
+      <span class="tag">最近 ${hhmm(st.last)}</span>
+    </div>
+  </div>` : '';
+  const recent = pts.slice(-14).reverse();
+  $t.innerHTML = statCard + `
+  <div class="card">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 足迹记录</h4>
+    <div class="sw"><div class="k">记录足迹<em>共 ${pts.length} 个点</em></div>
       <input type="checkbox" id="swTrail2" ${S.trail ? 'checked' : ''}></div>
     <div class="btngrid" style="margin-top:8px">
       <button class="btn sm ghost" id="btnFit">看完整路线</button>
-      <button class="btn sm line" id="btnClearTrail">清除轨迹</button>
+      <button class="btn sm line" id="btnClearTrail">清除足迹</button>
     </div>
   </div>
   <div class="card">
@@ -1014,8 +1126,8 @@ function renderTrailPanel() {
     if (pts.length > 1) map.fitBounds(pts.map(p => [p.lat, p.lng]), { padding: [60, 90] });
   };
   $('#btnClearTrail').onclick = () => {
-    if (!confirm('清除对方的历史轨迹？')) return;
-    peerHistory = []; localStorage.removeItem('lklx.trail'); drawTrail(); renderTrailPanel(); toast('轨迹已清除');
+    if (!confirm('清除对方的历史足迹？')) return;
+    peerHistory = []; localStorage.removeItem('lklx.trail'); drawTrail(); renderTrailPanel(); toast('足迹已清除');
   };
 }
 
@@ -1110,7 +1222,7 @@ function renderMe() {
       设置路径：打开 OwnTracks → 右上角 <b>+</b> → 模式选 <b>HTTP</b> →
       地址填下面这行 → 其它保持默认即可。
       <div id="otUrl" style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(0,0,0,.06);
-        font-size:11px;word-break:break-all;line-height:1.5">${'https://ntfy.sh/' + (S.room ? topicOf(S.room) : '（先设置暗号）')}</div>
+        font-size:11px;word-break:break-all;line-height:1.5">${relayBase().replace(/^https?:\/\//,'') + '/' + (S.room ? topicOf(S.room) : '（先设置暗号）')}</div>
       <button class="btn sm line" id="btnOtCopy" style="margin-top:6px">复制这行地址</button>
       <div class="hint" style="margin-top:6px">
         后台补点走的是<b>未加密</b>通道（OwnTracks 本身不支持加密），
@@ -1136,6 +1248,39 @@ function renderMe() {
   </div>
 
   <div class="card">
+    <h4>${Kitty.glyph('bell', 13)} 报备与提醒</h4>
+    <div class="sw"><div class="k">自动报备<em>她到达/离开报备点就通知我</em></div>
+      <input type="checkbox" id="swReport" ${S.reportPeer !== false ? 'checked' : ''}></div>
+    <div class="field" style="margin:10px 0 0">
+      <label>报备地点（${(S.places || []).length} 个）</label>
+      <div class="hint" style="margin-bottom:8px">在「她」那一页也能加，用的是她的当前位置。</div>
+      <button class="btn sm ghost" id="btnGoPlaces">去管理报备地点</button>
+    </div>
+    ${focusLeft() ? `<div class="note" style="margin-top:10px">🤫 专注时刻进行中，还剩 ${focusLeft()} 分钟</div>` : ''}
+  </div>
+
+  <div class="card">
+    <h4>${Kitty.glyph('lock', 13)} 服务器</h4>
+    <div class="field">
+      <label>中转服务器地址</label>
+      <input id="inRelay" placeholder="留空 = 公共 ntfy.sh（每天 250 条限制）"
+        value="${esc(S.relay || '')}">
+      <div class="hint">
+        自己买个服务器跑 <b>relay/</b> 目录里那套，就再没有条数限制，
+        报文也只经过你自己的机器。当前：<b>${S.relay ? '自建' : '公共 ntfy.sh'}</b>
+      </div>
+    </div>
+    <div class="field">
+      <label>服务器口令（可选）</label>
+      <input id="inRelayTok" placeholder="不填就是不校验" value="${esc(S.relayToken || '')}">
+    </div>
+    <div class="btngrid">
+      <button class="btn sm ghost" id="btnRelayTest">测试连接</button>
+      <button class="btn sm" id="btnRelaySave">保存并重连</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h4>${Kitty.glyph('lock', 13)} 关于隐私</h4>
     <div class="note">
       位置通过 <b>ntfy.sh</b> 公共服务器中转。开启加密后，服务器只能看到一串密文。
@@ -1156,7 +1301,7 @@ function renderMe() {
     S.room = v; save(); peer = null; peerHistory = []; seenIds.clear();
     if (peerMarker) { map.removeLayer(peerMarker); peerMarker = null; }
     const ot = $('#otUrl');
-    if (ot) ot.textContent = v ? ('https://ntfy.sh/' + topicOf(v)) : '（先设置暗号）';
+    if (ot) ot.textContent = v ? (relayBase().replace(/^https?:\/\//, '') + '/' + topicOf(v)) : '（先设置暗号）';
     drawTrail(); renderPeer(); renderTrailPanel(); connect(); restartPub();
     toast(v ? '暗号已保存 ✓ 正在连接…' : '暗号已清空');
   };
@@ -1199,7 +1344,7 @@ function renderMe() {
   };
   $('#btnOtCopy').onclick = async () => {
     if (!S.room) return toast('先设置暗号');
-    const u = 'https://ntfy.sh/' + topicOf(S.room);
+    const u = relayBase() + '/' + topicOf(S.room);
     try { await navigator.clipboard.writeText(u); toast('已复制，粘到 OwnTracks 的地址栏', true); }
     catch (e) { prompt('复制下面这行：', u); }
   };
@@ -1214,6 +1359,30 @@ function renderMe() {
   });
   $('#btnDemo').onclick = () => { if (S.demo) stopDemo(); else startDemo(); renderMe(); };
   $('#btnReset').onclick = () => { if (confirm('重新走一遍引导？')) { openWelcome(); } };
+  $('#btnGoPlaces').onclick = () => {
+    $('#meDrawer').hidden = true;
+    $$('#seg button').forEach(x => x.classList.toggle('on', x.dataset.tab === 'Peer'));
+    $$('.panel').forEach(p => p.classList.toggle('on', p.id === 'panelPeer'));
+    $('#sheet').className = 'sheet half';
+    renderPeer();
+    setTimeout(() => { const el = $('#placeList'); if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 120);
+  };
+  $('#swReport').onchange = e => { S.reportPeer = e.target.checked; save(); toast(S.reportPeer ? '到达/离开会通知我' : '已关闭自动报备'); };
+  $('#btnRelaySave').onclick = () => {
+    S.relay = $('#inRelay').value.trim();
+    S.relayToken = $('#inRelayTok').value.trim();
+    save(); connect(); toast(S.relay ? '已切到自建服务器，正在重连…' : '已切回公共 ntfy.sh');
+    renderMe();
+  };
+  $('#btnRelayTest').onclick = async () => {
+    const raw = $('#inRelay').value.trim();
+    const base = (raw || NTFY).replace(/\/+$/, '');
+    const url = /^https?:/i.test(base) ? base : 'https://' + base;
+    try {
+      const r = await fetch(url + '/healthz');
+      toast(r.ok ? '服务器在线 ✓' : '服务器回了 ' + r.status, r.ok);
+    } catch (e) { toast('连不上：' + (e.message || e)); }
+  };
 
   $$('#swatches .swatch').forEach(b => b.onclick = () => {
     S.avatar = { t: 'k', c: b.dataset.c }; save(); renderMe();
@@ -1260,29 +1429,78 @@ window.lklxBack = function () {
 };
 
 /* ============ 12. 交互 ============ */
+/* 切到某个分段（她/足迹/悄悄话），导航重建后统一从这里走 */
+function goSeg(tab) {
+  $$('#seg button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
+  $$('.panel').forEach(p => p.classList.toggle('on', p.id === 'panel' + tab));
+  if (tab === 'Trail') renderTrailPanel();
+  if (tab === 'Chat') renderChat();
+  if (tab === 'Peer') renderPeer();
+}
 function focusPeer(up) {
   if (!peer) { toast('还没收到对方位置'); return; }
   if (up) map.flyTo([peer.lat, peer.lng], Math.max(map.getZoom(), 15), { duration: 0.8 });
   else map.setView([peer.lat, peer.lng]);
 }
 function bindUI() {
-  // 面板展开/收起
   const sheet = $('#sheet');
-  $('.grab').addEventListener('click', () => sheet.classList.toggle('up'));
-  $('.peek').addEventListener('click', e => {
-    if (e.target.closest('.pav')) { focusPeer(true); return; }
-    sheet.classList.toggle('up');
+  // 抽屉三档：收起 / 半开 / 全开。拖动跟手，松手吸附到最近一档
+  const SNAPS = ['', 'half', 'up'];
+  function snapTo(i) {
+    const c = SNAPS[Math.max(0, Math.min(2, i))];
+    sheet.className = 'sheet' + (c ? ' ' + c : '');
+  }
+  function snapIndex() {
+    if (sheet.classList.contains('up')) return 2;
+    if (sheet.classList.contains('half')) return 1;
+    return 0;
+  }
+  function expandTo(i) { if (snapIndex() < i) snapTo(i); }
+
+  let dragY = 0, dragging = false;
+  const dz = $('#dragzone');
+  dz.addEventListener('touchstart', e => {
+    dragging = true; dragY = e.touches[0].clientY;
+    sheet.style.transition = 'none';
+  }, { passive: true });
+  dz.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const dy = e.touches[0].clientY - dragY;
+    if (Math.abs(dy) < 6) return;
+    const base = [0, 58, 88][snapIndex()] / 100 * window.innerHeight;
+    const h = Math.max(120, Math.min(window.innerHeight * 0.9, base - dy));
+    sheet.style.height = h + 'px';
+    dz.dataset.moved = '1';
+  }, { passive: true });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    sheet.style.transition = '';
+    sheet.style.height = '';
+    const y = sheet.getBoundingClientRect().top;
+    const vh = window.innerHeight;
+    // 按松手时抽屉高度选最近的一档
+    let best = 0, bd = 1e9;
+    [0, 1, 2].forEach(i => {
+      const top = vh - [128, vh * 0.58, vh * 0.88][i];
+      const d = Math.abs(top - y);
+      if (d < bd) { bd = d; best = i; }
+    });
+    snapTo(best);
+  };
+  dz.addEventListener('touchend', endDrag);
+  dz.addEventListener('touchcancel', endDrag);
+  dz.addEventListener('click', () => { if (dz.dataset.moved) { dz.dataset.moved = ''; return; } snapTo(snapIndex() === 0 ? 1 : 0); });
+
+  $$('#seg button').forEach(b => b.onclick = () => {
+    goSeg(b.dataset.tab);
+    expandTo(1);
   });
-  $$('.tabs button').forEach(b => b.onclick = () => {
-    $$('.tabs button').forEach(x => x.classList.toggle('on', x === b));
-    $$('.panel').forEach(p => p.classList.toggle('on', p.id === 'panel' + b.dataset.tab));
-    if (!$('#sheet').classList.contains('up')) $('#sheet').classList.add('up');
-    if (b.dataset.tab === 'Trail') renderTrailPanel();
-    if (b.dataset.tab === 'Me') renderMe();
-    if (b.dataset.tab === 'Chat') renderChat();
-  });
-  const syncFabs = () => $('#fabs').classList.toggle('up', sheet.classList.contains('up'));
-  new MutationObserver(syncFabs).observe(sheet, { attributes: true, attributeFilter: ['class'] });
+
+  // 我的：全屏抽屉
+  $('#btnMe').onclick = () => { renderMe(); $('#meDrawer').hidden = false; };
+  $('#meClose').onclick = () => { $('#meDrawer').hidden = true; };
+  $('#meAv').onclick = () => { renderMe(); $('#meDrawer').hidden = false; };
 
   $('#btnLocate').onclick = () => {
     if (me) map.flyTo([me.lat, me.lng], 16, { duration: 0.7 });
@@ -1321,6 +1539,190 @@ function sendPoke(text, hearts, plain) {
   if (hearts) { heartsBurst(9); vibe(18); }
   if (plain) toast('已发送', true);
 }
+
+/* ============ 12.5 报备 · 重要提醒 · 专注时刻 ============ */
+function showNote(title, body, kind, actions) {
+  const el = $('#noteCard');
+  if (!el) return;
+  el.className = 'notecard';
+  el.innerHTML = '<div class="ntitle">' + esc(title) + '</div>'
+    + (body ? '<div class="nbody">' + esc(body) + '</div>' : '')
+    + (actions && actions.length ? '<div class="btngrid" style="margin-top:10px">'
+        + actions.map((a, i) => `<button class="btn sm ${i ? 'ghost' : ''}" data-na="${i}">${esc(a.t)}</button>`).join('')
+        + '</div>' : '');
+  el.hidden = false;
+  if (actions) actions.forEach((a, i) => {
+    const b = el.querySelector('[data-na="' + i + '"]');
+    if (b) b.onclick = () => { a.fn(); };
+  });
+  clearTimeout(showNote._t);
+  if (!actions || !actions.length) showNote._t = setTimeout(() => { el.hidden = true; }, 6500);
+}
+function hideNote() { const el = $('#noteCard'); if (el) el.hidden = true; }
+
+/* 系统通知：安卓壳里走原生（后台也能弹），网页端走 Notification API。
+   专注时刻内一律不打扰。 */
+function notifyLocal(title, body) {
+  if (S.focusUntil && S.focusUntil > Date.now()) return;
+  if (S.sound) vibe([16, 40, 16]);
+  if (window.LKLX && LKLX.notify) {
+    try { LKLX.notify(title, body || ''); return; } catch (e) {}
+  }
+  try {
+    if (S.notify && 'Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body: body || '', tag: 'lklx' });
+    }
+  } catch (e) {}
+}
+function focusLeft() {
+  const d = (S.focusUntil || 0) - Date.now();
+  return d > 0 ? Math.ceil(d / 60000) : 0;
+}
+function requestFocus(min) {
+  if (!S.room) { toast('先设置房间暗号'); return; }
+  publish({ v: 1, k: 'focus', id: myId(), n: S.name || '我', min, t: Date.now() });
+  toast('已发出专注请求，等她同意', true);
+}
+
+/* ---- 报备地点 ---- */
+function placeDist(p, ref) { return haversine({ lat: p.lat, lng: p.lng }, ref || peer); }
+function savePlaces() { save(); renderPlaces(); }
+function addPlace(name, ref) {
+  if (!ref) { toast('还没有可用位置'); return; }
+  const p = { id: 'p' + Date.now().toString(36), n: name, lat: ref.lat, lng: ref.lng, r: 300, on: true, in: false };
+  S.places = S.places || [];
+  S.places.push(p);
+  savePlaces();
+  toast('已添加报备点：' + name, true);
+}
+function delPlace(id) {
+  S.places = (S.places || []).filter(p => p.id !== id);
+  savePlaces();
+}
+function togglePlace(id, on) {
+  const p = (S.places || []).find(x => x.id === id);
+  if (p) { p.on = on; p.in = false; save(); }
+}
+/* 每两秒看一次：她进入/离开某个报备点 → 通知我；
+   我自己进入/离开 → 发一条 rep 给对方（这就是「自动报备」） */
+function checkPlaces() {
+  const list = S.places || [];
+  if (!list.length) return;
+  let dirty = false;
+  list.forEach(p => {
+    if (!p.on) return;
+    if (peer) {
+      const d = placeDist(p, peer);
+      const inside = d != null && d <= (p.r || 300);
+      if (inside !== !!p.in) {
+        p.in = inside; dirty = true;
+        const nm = peer.n || '她';
+        showNote(inside ? '💕 ' + nm + '到了 · ' + p.n : '👋 ' + nm + '离开了 · ' + p.n,
+          inside ? '她刚刚到达你设的报备点' : '她刚离开这个报备点', inside ? 'ok' : '');
+        notifyLocal(inside ? nm + '到了' + p.n : nm + '离开了' + p.n, '自动报备');
+      }
+    }
+  });
+  if (dirty) save();
+}
+function renderPlaces() {
+  const box = $('#placeList');
+  if (!box) return;
+  const list = S.places || [];
+  if (!list.length) {
+    box.innerHTML = `<div class="note">还没有报备点。加上「家 / 公司」，她一到一离开，你这边就会收到提醒。</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="placelist">` + list.map(p => {
+    const d = peer ? placeDist(p, peer) : null;
+    const dtxt = d == null ? '她还没定位' : (d < 950 ? Math.round(d / 10) * 10 + ' 米' : (d / 1000).toFixed(1) + ' 公里');
+    return `<div class="placerow ${p.in && p.on ? 'inside' : ''}">
+      <div class="pic">${Kitty.glyph('gps', 16)}</div>
+      <div class="pname"><b>${esc(p.n)}</b><small>${p.on ? '距离她 ' + dtxt + ' · 半径 ' + (p.r || 300) + '米' : '已关闭'}</small></div>
+      <input type="checkbox" data-on="${p.id}" ${p.on ? 'checked' : ''}>
+      <button class="pdel" data-del="${p.id}">×</button>
+    </div>`;
+  }).join('') + `</div>
+  <div class="btngrid" style="margin-top:9px">
+    <button class="btn sm ghost" id="btnAddHere">${Kitty.glyph('gps', 15)} 用她的位置新增</button>
+    <button class="btn sm ghost" id="btnAddMine">${Kitty.glyph('nav', 15)} 用我的位置新增</button>
+  </div>`;
+  box.querySelectorAll('[data-del]').forEach(b => b.onclick = () => delPlace(b.dataset.del));
+  box.querySelectorAll('[data-on]').forEach(b => b.onchange = () => togglePlace(b.dataset.on, b.checked));
+  const a1 = box.querySelector('#btnAddHere'), a2 = box.querySelector('#btnAddMine');
+  if (a1) a1.onclick = () => {
+    if (!peer) { toast('还没收到她的位置'); return; }
+    const n = prompt('给她这个位置起个名字', '家');
+    if (n) addPlace(n.trim().slice(0, 8), peer);
+  };
+  if (a2) a2.onclick = () => {
+    if (!me) { toast('还没有我的位置'); return; }
+    const n = prompt('这个地方叫什么', '公司');
+    if (!n) return;
+    addPlace(n.trim().slice(0, 8), me);
+    publish({ v: 1, k: 'rep', id: myId(), n: S.name || '我', place: n.trim().slice(0, 8), enter: true, t: Date.now() });
+  };
+}
+
+/* ---- 重要动态提醒：低电量 / 长时间没更新 ---- */
+const alertSent = {};
+function checkAlerts() {
+  if (!peer) return;
+  const nm = peer.n || '她';
+  const b = peer.batt;
+  if (b != null && b <= 20 && !peer.chg && !alertSent.batt) {
+    alertSent.batt = true;
+    showNote('🔋 ' + nm + '手机只剩 ' + b + '%', '记得提醒她充电', 'warn');
+    notifyLocal(nm + '电量只剩 ' + b + '%', '该充电了');
+  }
+  if (b != null && (b > 25 || peer.chg)) alertSent.batt = false;
+
+  const idle = Date.now() - (peer.at || 0);
+  if (idle > 30 * 60000 && !alertSent.idle && !peer.ot) {
+    alertSent.idle = true;
+    showNote('📵 ' + nm + '已经 ' + Math.round(idle / 60000) + ' 分钟没更新位置了',
+      '可能锁屏了、或者关掉了共享', 'warn');
+  }
+  if (idle < 5 * 60000) alertSent.idle = false;
+}
+
+/* ---- 时光足迹：本周走了多少、在哪儿待得久 ---- */
+function trailStats(list) {
+  const pts = (list || []).filter(p => p && p.t);
+  if (pts.length < 2) return null;
+  const week = Date.now() - 7 * 86400000;
+  const rec = pts.filter(p => p.t >= week);
+  const use = rec.length >= 2 ? rec : pts;
+  const sorted = use.slice().sort((a, b) => a.t - b.t);
+  let dist = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const d = haversine(sorted[i - 1], sorted[i]);
+    if (d != null && d < 3000) dist += d;   // 跳点不算
+  }
+  // 按 500 米网格聚类，粗算去过几个地方
+  const cells = new Set(sorted.map(p => Math.round(p.lat * 200) + '_' + Math.round(p.lng * 200)));
+  const spanH = Math.max(0, (sorted[sorted.length - 1].t - sorted[0].t) / 3600000);
+  return {
+    n: sorted.length,
+    km: dist / 1000,
+    spots: cells.size,
+    hours: spanH,
+    first: sorted[0].t,
+    last: sorted[sorted.length - 1].t
+  };
+}
+
+/* 右上角「我的」头像 */
+function renderMeChip() {
+  const el = $('#meAv');
+  if (!el) return;
+  el.innerHTML = Kitty.avatarHTML
+    ? Kitty.avatarHTML(S.avatar, 44)
+    : `<div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(140deg,var(--p400),var(--p600))"></div>`;
+  const img = el.querySelector('img');
+  if (img) { img.style.width = '100%'; img.style.height = '100%'; img.style.objectFit = 'cover'; }
+}
+
 
 /* ============ 13. 引导 ============ */
 let step = 0;
@@ -1377,9 +1779,7 @@ function bindWelcome() {
   });
   $$('.wv-back').forEach(b => b.onclick = () => { if (step > 0) { step--; renderStep(); } });
   $('#wvDemo').onclick = () => { $('#welcome').classList.remove('on'); startDemo();
-    renderMe(); $('#sheet').classList.add('up');
-    $$('.tabs button').forEach(x => x.classList.toggle('on', x.dataset.tab === 'Peer'));
-    document.querySelector('.tabs button[data-tab="Peer"]').click(); };
+    renderMe(); $('#sheet').className = 'sheet half'; goSeg('Peer'); };
   $('#wvRand').onclick = () => { $('#wvRoom').value = randRoom(); };
   $('#wvShare').onclick = async () => {
     const room = $('#wvRoom').value.trim();
@@ -1398,8 +1798,8 @@ function finishWelcome() {
   askGeo();     // 这一步带着点击手势，iOS 才会弹定位权限框
   connect(); catchUp(); restartPub();
   renderMe(); renderPeer();
-  $('#sheet').classList.add('up');
-  document.querySelector('.tabs button[data-tab="Peer"]').click();
+  $('#sheet').className = 'sheet half';
+  goSeg('Peer');
   toast('开始共享位置 💕', true);
   heartsBurst(8);
 }
@@ -1488,6 +1888,8 @@ function checkBrowser() {
 
 function tick() {
   if (peer) renderPeer();
+  if (peer && !S.demo) { checkPlaces(); }
+  if (peer) checkAlerts();
   if (nearWatch && peer && me && !nearWatch.fired) {
     const d = haversine(me, peer);
     if (d != null && d <= nearWatch.target) {
@@ -1505,11 +1907,11 @@ function boot() {
   initMap();
   applyLayer();
   buildWelcome();
-  $('#tabs').innerHTML = [
-    ['Peer', 'map', '对方'], ['Trail', 'trail', '轨迹'],
-    ['Chat', 'chat', '互动'], ['Me', 'me', '我的']
-  ].map(t => `<button data-tab="${t[0]}" class="${t[0] === 'Peer' ? 'on' : ''}">
-      ${Kitty.icon(t[1], 20)}<span>${t[2]}</span></button>`).join('');
+  /* 导航：地图是主角，下面是可拖拽的抽屉；「我的」收进右上角头像里，
+     不再用底部那排小图标 —— 那样四个格子挤在一起，像小工具而不像产品。 */
+  $('#seg').innerHTML = [
+    ['Peer', '她'], ['Trail', '足迹'], ['Chat', '悄悄话']
+  ].map(t => `<button data-tab="${t[0]}" class="${t[0] === 'Peer' ? 'on' : ''}">${t[1]}</button>`).join('');
   $('#panelChat').innerHTML = `
     <div class="card" style="display:flex;flex-direction:column">
       <h4>${Kitty.heart('#FF6B9D', 13)} 悄悄话</h4>
@@ -1545,7 +1947,7 @@ function boot() {
     }
   }
 
-  renderChat(); renderPeer(); renderTrailPanel();
+  renderChat(); renderPeer(); renderTrailPanel(); renderMeChip();
 
   if (!S.welcome || !S.room) {
     openWelcome();

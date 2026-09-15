@@ -14,7 +14,7 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 
@@ -27,7 +27,12 @@
       <span id="logoSlot"></span>
       <span><b>两颗心</b><br><small>L I A N G &nbsp;K E &nbsp;X I N</small></span>
     </div>
-    <div class="conn"><i class="dot" id="dot"></i><span id="connText">未设置</span></div>
+    <div class="topright">
+      <div class="conn"><i class="dot" id="dot"></i><span id="connText">未设置</span></div>
+      <button class="mechip" id="btnMe" aria-label="我的">
+        <span id="meAv"></span>
+      </button>
+    </div>
   </div>
 
   <div class="geobar" id="geoBar" hidden></div>
@@ -35,8 +40,8 @@
   <div class="fabs" id="fabs"></div>
 
   <div class="sheet" id="sheet">
-    <div class="handle"></div>
-    <div class="grab">
+    <div class="dragzone" id="dragzone">
+      <div class="handle"></div>
       <div class="peek">
         <div class="pav" id="peerAv"></div>
         <div class="peek-info">
@@ -48,25 +53,34 @@
           <div class="l" id="peerDistLbl">距离你</div>
         </div>
       </div>
+      <div class="seg" id="seg"></div>
     </div>
-    <div class="tabs" id="tabs"></div>
-    <div class="panels">
+    <div class="panels" id="panels">
       <div class="panel on" id="panelPeer"></div>
       <div class="panel" id="panelTrail"></div>
       <div class="panel" id="panelChat"></div>
-      <div class="panel" id="panelMe"></div>
     </div>
+  </div>
+
+  <div class="drawer" id="meDrawer" hidden>
+    <div class="dhead">
+      <div class="dt">我的</div>
+      <button class="dclose" id="meClose" aria-label="关闭">✕</button>
+    </div>
+    <div class="dbody" id="panelMe"></div>
   </div>
 
   <div class="overlay" id="welcome"></div>
   <div class="toast" id="toast"></div>
+
+  <div class="notecard" id="noteCard" hidden></div>
 </div>
 
-<script src="kitty.js?v=9"></script>
+<script src="kitty.js?v=10"></script>
   <script>window._AMapSecurityConfig={securityJsCode:"e9ef6cc0e412e66ee6656e585c10f7ff"};</script>
   <script src="https://webapi.amap.com/maps?v=2.0&key=7b0d626725d843182c34d1023a114d95"></script>
 
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 <script>
   document.getElementById('logoSlot').innerHTML = Kitty.logo(30);
   // 首次成功打开后，应用外壳常驻本机：即便网站被墙也能启动

@@ -13,7 +13,7 @@
   --shadow:0 10px 30px -8px rgba(214,54,114,.22), 0 2px 8px rgba(214,54,114,.08);
   --shadow-lg:0 18px 46px -10px rgba(214,54,114,.30);
   --r-lg:26px; --r-md:18px; --r-sm:12px;
-  --sheet-peek:232px;
+  --sheet-peek:128px;
   /* 状态栏/手势条安全区。原生侧会用真实窗口插入值覆盖这两个变量，
      兜住某些机型 WebView 里 env(safe-area-inset-*) 返回 0 的情况 */
   --sat:env(safe-area-inset-top,0px);
@@ -89,7 +89,7 @@ img{display:block;max-width:100%}
 /* ---------- 悬浮按钮 ---------- */
 .fabs{position:absolute;z-index:5;right:12px;bottom:calc(var(--sheet-peek) + 14px);
   display:flex;flex-direction:column;gap:10px;transition:bottom .32s cubic-bezier(.4,0,.2,1)}
-.fabs.up{bottom:calc(66vh + 14px)}
+.fabs.up{bottom:calc(var(--sheet-peek) + 14px);opacity:0;pointer-events:none}
 .fab{
   width:46px;height:46px;border-radius:16px;display:grid;place-items:center;
   background:var(--card);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
@@ -113,7 +113,9 @@ img{display:block;max-width:100%}
   padding-bottom:var(--sab)
 }
 [data-theme="night"] .sheet{border-top-color:rgba(255,143,177,.18)}
-.sheet.up{height:66vh}
+.sheet.half{height:58vh}
+.sheet.up{height:88vh}
+.sheet .dragzone{flex:none;touch-action:none;cursor:grab}
 .handle{width:44px;height:5px;border-radius:3px;background:var(--p300);margin:9px auto 4px;flex:none}
 .grab{padding:0 8px 4px;flex:none}
 
@@ -141,20 +143,54 @@ img{display:block;max-width:100%}
 .distbox .d small{font-size:11px;font-weight:700;margin-left:2px}
 .distbox .l{font-size:10px;color:var(--ink3);letter-spacing:1px;margin-top:2px}
 
-/* 分页签 */
-.tabs{display:flex;gap:6px;padding:2px 12px 10px;flex:none}
-.tabs button{
-  flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:7px 0 6px;border-radius:14px;color:var(--ink3);font-size:10.5px;font-weight:600;transition:.2s
+/* 分页签 → 胶囊分段控件（比原来底部那排图标大方得多） */
+.seg{display:flex;gap:6px;padding:2px 14px 11px;flex:none}
+.seg button{
+  flex:1;padding:9px 0;border-radius:13px;font-size:13px;font-weight:700;letter-spacing:.3px;
+  color:var(--ink3);background:var(--p50);border:1px solid var(--line);transition:.18s
 }
-.tabs button svg{opacity:.75}
-.tabs button.on{background:linear-gradient(140deg,var(--p100),var(--p200));color:var(--p700)}
-[data-theme="night"] .tabs button.on{background:linear-gradient(140deg,#4A2340,#5C2B4C);color:var(--p300)}
-.tabs button.on svg{opacity:1}
+[data-theme="night"] .seg button{background:#2E1626}
+.seg button.on{
+  color:#fff;border-color:transparent;
+  background:linear-gradient(140deg,var(--p400),var(--p600));
+  box-shadow:0 6px 16px -6px rgba(255,107,157,.7)
+}
+.seg button:active{transform:scale(.97)}
+
+/* 我的 —— 右上角头像入口 + 全屏抽屉 */
+.topright{display:flex;align-items:center;gap:8px}
+.mechip{
+  width:44px;height:44px;border-radius:50%;flex:none;padding:0;
+  background:var(--card);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  box-shadow:var(--shadow);border:1.5px solid rgba(255,255,255,.7);
+  display:grid;place-items:center;overflow:hidden
+}
+[data-theme="night"] .mechip{border-color:rgba(255,143,177,.22)}
+.mechip img{width:100%;height:100%;object-fit:cover}
+.mechip:active{transform:scale(.93)}
+.drawer{
+  position:absolute;z-index:40;top:0;left:0;right:0;bottom:0;
+  background:linear-gradient(170deg,var(--bg1),var(--bg2));
+  display:flex;flex-direction:column;
+  animation:drawerIn .28s cubic-bezier(.3,0,.2,1)
+}
+[data-theme="night"] .drawer{background:linear-gradient(170deg,var(--bg1),#33132A)}
+.drawer[hidden]{display:none!important}
+@keyframes drawerIn{from{transform:translateX(14px);opacity:.4}to{transform:none;opacity:1}}
+.dhead{
+  flex:none;display:flex;align-items:center;gap:10px;
+  padding:calc(var(--sat) + 14px) 18px 12px;border-bottom:1px solid var(--line)
+}
+.dhead .dt{flex:1;font-size:19px;font-weight:800;letter-spacing:.5px}
+.dclose{
+  width:38px;height:38px;border-radius:50%;font-size:16px;font-weight:700;color:var(--ink2);
+  background:var(--card);box-shadow:var(--shadow);border:1px solid var(--line)
+}
+.dbody{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(var(--sab) + 28px)}
 
 /* 内容区 */
-.panels{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 14px 22px;display:none}
-.sheet.up .panels{display:block}
+.panels{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:0 14px calc(var(--sab) + 22px);display:none}
+.sheet.half .panels,.sheet.up .panels{display:block}
 .panel{display:none;animation:fadeUp .26s ease}
 .panel.on{display:block}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -359,3 +395,64 @@ img{display:block;max-width:100%}
   font-family:inherit;line-height:1;transition:.16s;cursor:pointer}
 .mchip.on{background:linear-gradient(140deg,var(--p400),var(--p600));
   color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(255,107,157,.32)}
+
+/* ===========================================================
+   报备地点 / 足迹统计 / 重要提醒 —— 新增组件
+   =========================================================== */
+.placelist{display:flex;flex-direction:column;gap:8px}
+.placerow{
+  display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:16px;
+  background:var(--p50);border:1px solid var(--line)
+}
+[data-theme="night"] .placerow{background:#2E1626}
+.placerow .pic{
+  width:36px;height:36px;border-radius:12px;flex:none;display:grid;place-items:center;
+  background:linear-gradient(140deg,var(--p200),var(--p300));color:var(--p700)
+}
+.placerow .pname{flex:1;min-width:0}
+.placerow .pname b{display:block;font-size:14px;font-weight:700}
+.placerow .pname small{font-size:11px;color:var(--ink3)}
+.placerow .pdel{width:30px;height:30px;border-radius:50%;flex:none;color:var(--ink3);
+  background:var(--card-solid);border:1px solid var(--line);font-size:14px;line-height:1}
+.placerow.inside{border-color:var(--mint);background:rgba(95,203,178,.10)}
+.placerow.inside .pic{background:linear-gradient(140deg,#7FD8C4,#3FBF9E);color:#fff}
+
+.statgrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:2px 0 4px}
+.stat{
+  padding:12px 8px;border-radius:16px;text-align:center;
+  background:var(--p50);border:1px solid var(--line)
+}
+[data-theme="night"] .stat{background:#2E1626}
+.stat .n{font-size:19px;font-weight:800;color:var(--p600);line-height:1.15;letter-spacing:-.4px}
+.stat .n small{font-size:11px;font-weight:700;margin-left:1px}
+.stat .l{font-size:10.5px;color:var(--ink3);margin-top:3px;letter-spacing:.4px}
+
+.alertitem{
+  display:flex;align-items:flex-start;gap:10px;padding:11px 12px;border-radius:16px;
+  background:rgba(255,201,61,.12);border:1px solid rgba(255,201,61,.45);margin-bottom:8px
+}
+.alertitem.hot{background:rgba(255,77,109,.10);border-color:rgba(255,77,109,.4)}
+.alertitem .ai{font-size:16px;line-height:1.2;flex:none}
+.alertitem .at{font-size:12.5px;line-height:1.5;color:var(--ink2)}
+.alertitem .at b{color:var(--ink)}
+
+.tagrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tag{
+  padding:5px 11px;border-radius:999px;font-size:11.5px;font-weight:700;
+  background:var(--p100);color:var(--p700);border:1px solid var(--line)
+}
+[data-theme="night"] .tag{background:#43223A;color:var(--p300)}
+
+/* 从地图上弹出的浮层提示（报备/提醒），比 toast 更有存在感 */
+.notecard{
+  position:absolute;z-index:35;left:14px;right:14px;top:calc(var(--sat) + 62px);
+  padding:13px 15px;border-radius:18px;
+  background:rgba(255,255,255,.97);border:1px solid var(--line);
+  box-shadow:var(--shadow-lg);
+  animation:noteIn .3s cubic-bezier(.2,0,.2,1)
+}
+[data-theme="night"] .notecard{background:rgba(58,29,48,.97)}
+.notecard[hidden]{display:none!important}
+.notecard .ntitle{font-size:14px;font-weight:800;display:flex;align-items:center;gap:7px}
+.notecard .nbody{font-size:12.5px;color:var(--ink3);margin-top:3px;line-height:1.5}
+@keyframes noteIn{from{transform:translateY(-10px);opacity:0}to{transform:none;opacity:1}}

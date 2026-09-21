@@ -1998,10 +1998,18 @@ function fatalBar(msg) {
   } catch (e) {}
 }
 window.addEventListener('error', e => {
-  fatalBar((e.message || 'unknown') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || 0));
+  const msg = String(e.message || '');
+  // 跨域脚本（高德地图那个 SDK）出错时浏览器只给一句 "Script error."，
+  // 既不知道哪一行也没法处理，弹红条只会吓自己 —— 直接忽略。
+  if (!msg || /^Script error\.?$/i.test(msg)) return;
+  if (/amap|autonavi/i.test(String(e.filename || ''))) return;
+  fatalBar(msg + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || 0));
 });
 window.addEventListener('unhandledrejection', e => {
-  fatalBar('Promise: ' + String((e.reason && e.reason.message) || e.reason).slice(0, 200));
+  const r = e && e.reason;
+  const m = String((r && r.message) || r || '');
+  if (!m || /^Script error\.?$/i.test(m) || /amap|autonavi/i.test(m)) return;
+  fatalBar('Promise: ' + m.slice(0, 200));
 });
 
 function boot() {

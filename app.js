@@ -2255,7 +2255,7 @@ function renderHomeStatus(force) {
 function showHome() {
   const app = document.getElementById('app');
   if (app) app.classList.remove('mapmode');
-  hideTimeline();
+  closeDrawers(); hideTimeline();
   const h = $('#home'); if (h) h.hidden = false;
   setNav('home');
   if (window.Daily) { try { window.Daily.home(); } catch (e) {} }
@@ -2265,7 +2265,7 @@ function showHome() {
 function showMap() {
   const app = document.getElementById('app');
   if (app) app.classList.add('mapmode');
-  hideTimeline();
+  closeDrawers(); hideTimeline();
   const h = $('#home'); if (h) h.hidden = true;
   setNav('map');
   // 保险起见再让高德量一次尺寸（正常情况画布尺寸一直是对的）
@@ -2594,7 +2594,7 @@ function onPeerTl(o) {
 }
 function showTimeline() {
   tlDay = null;                     // 从导航进来永远先看今天
-  if (window.Daily && window.Daily.close) { try { window.Daily.close(); } catch (e) {} }
+  closeDrawers();
   const t = document.getElementById('timeline');
   const h = document.getElementById('home');
   const app = document.getElementById('app');
@@ -2626,12 +2626,22 @@ function bindTabbar() {
   bar.querySelectorAll('button').forEach(b => {
     b.onclick = () => {
       const k = b.dataset.nav;
+      // ★ 关键：底部导航在抽屉(z-index 40)之上、能点到，但抽屉不关的话
+      //   页面在底下换了、屏幕还是那张「我的」——看起来就像点了没反应。
+      closeDrawers();
       if (k === 'home') { hideTimeline(); showHome(); setNav('home'); }
       else if (k === 'map') { hideTimeline(); showMap(); goSeg('Peer'); $('#sheet').className = 'sheet half'; setNav('map'); }
       else if (k === 'time') { showTimeline(); }
       else if (k === 'me') { setNav('me'); renderMe(); $('#meDrawer').hidden = false; }
     };
   });
+}
+/* 关掉所有全屏抽屉（我的 / 心动日常） */
+function closeDrawers() {
+  const m = document.getElementById('meDrawer');
+  if (m) m.hidden = true;
+  const d = document.getElementById('daily');
+  if (d) d.hidden = true;
 }
 
 /* ============ 13. 引导 ============ */

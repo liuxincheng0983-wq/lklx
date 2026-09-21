@@ -1778,6 +1778,10 @@ function initDaily() {
     },
     chatCount: () => chat.length,
     relayPublic: () => !S.relay,
+    myAvatar: () => Kitty.avatarHTML(S.avatar, 52),
+    peerAvatar: () => Kitty.avatarHTML((peer && peer.av) || { t: 'k', c: '#FFC9DD' }, 52),
+    peerName: () => (peer && peer.n) || 'TA',
+    heart: (c, sz) => Kitty.heart(c || '#fff', sz || 22),
     setTheme: (k, t) => applyAccent(t)
   });
 }
@@ -1791,6 +1795,9 @@ function applyAccent(t) {
   r.setProperty('--p600', t.b);
   r.setProperty('--p700', t.b);
   r.setProperty('--p300', t.a);
+  r.setProperty('--xd1', t.a);
+  r.setProperty('--xd2', t.b);
+  r.setProperty('--xd3', t.b);
   r.setProperty('--line', 'rgba(255,107,157,.16)');
 }
 

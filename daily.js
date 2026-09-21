@@ -478,8 +478,10 @@
   function note(html) { if (H && H.note) H.note('心动日常', html); }
 
   /* ---------------- 界面 ---------------- */
-  function card(emoji, title, sub, key) {
-    return '<button class="dcard" data-go="' + key + '"><span class="de">' + emoji + '</span>'
+  function card(emoji, title, sub, key, gi, badge) {
+    return '<button class="dcard g' + ((gi % 8) + 1) + '" data-go="' + key + '">'
+      + (badge ? '<span class="dbadge">' + badge + '</span>' : '')
+      + '<span class="de">' + emoji + '</span>'
       + '<b>' + title + '</b><small>' + sub + '</small></button>';
   }
   function loveStrip() {
@@ -498,29 +500,43 @@
     var today = D.love[dayKey()] || {};
     var v = '';
     if (view === 'home') {
+      var meName = H.myName ? H.myName() : '我';
+      var peName = H.peerName ? H.peerName() : 'TA';
+      var todayLove = !!today.me;
       v = '<div class="dhero">'
-        + '<div class="dh1">' + (D.since ? '恋爱第 <b>' + loveDays() + '</b> 天' : '设置恋爱纪念日') + '</div>'
-        + '<div class="dh2">连续打卡 <b>' + streak() + '</b> 天'
-        + (today.me ? ' · 你今天说过了' : '') + (today.peer ? ' · TA 也说过了' : '') + '</div>'
-        + loveStrip()
-        + '<button class="btn" id="btnLove" style="margin-top:12px">' + (today.me ? '今天已说「我爱你」💕' : '对她说「我爱你」💕') + '</button>'
-        + (D.since ? '' : '<button class="btn sm ghost" id="btnSince" style="margin-top:8px">设置恋爱纪念日 / 见面日</button>')
+        + '<div class="dpair">'
+        + '<div class="pav2">' + H.myAvatar() + '</div>'
+        + '<div class="dheart">' + H.heart('#FFFFFF', 24) + '</div>'
+        + '<div class="pav2">' + H.peerAvatar() + '</div>'
+        + '<div class="dnames">' + esc(meName) + ' & ' + esc(peName) + '</div>'
         + '</div>'
+        + '<div class="dh1">' + (D.since ? '我们已经在一起 <b>' + loveDays() + '</b> 天' : '写下你们在一起的那天') + '</div>'
+        + '<div class="dh2">连续打卡 ' + streak() + ' 天'
+        + (today.peer ? ' · TA 今天也说过了 💕' : (todayLove ? ' · 等 TA 回你一句' : '')) + '</div>'
+        + loveStrip()
+        + '<button class="btnLoveHero' + (todayLove ? ' done' : '') + '" id="btnLove">'
+        + (todayLove ? '✓ 今天已经说过「我爱你」' : '对她说「我爱你」💕') + '</button>'
+        + (D.since ? '' : '<button class="btn sm ghost" id="btnSince" style="margin-top:9px">'
+            + '设置恋爱纪念日 / 见面日</button>')
+        + '</div>'
+        + '<div class="dsec" style="margin:16px 2px 10px"><h3 style="font-size:15px">💗 我们的小日常</h3></div>'
         + '<div class="dgrid">'
-        + card('💌', '甜言蜜语', '早安午安晚安 · 每日情话', 'greet')
-        + card('📔', '心情日记', D.moods.length ? D.moods.length + ' 条记录' : '记录今天的心情', 'mood')
-        + card('📸', '心动相册', D.photos.length ? D.photos.length + ' 张照片' : '共享甜蜜瞬间', 'photo')
-        + card('✅', '恋爱清单', listProgress() + ' 件小事', 'list')
-        + card('🧲', '冰箱贴', D.notes.length ? D.notes.length + ' 张便签' : '给 TA 留句话', 'note')
-        + card('🎡', '约会转盘', '今天去哪吃玩', 'idea')
-        + card('🎯', '默契挑战', D.quiz.length ? '最近 ' + D.quiz.length + ' 题' : '看看你懂不懂我', 'quiz')
-        + card('🐱', D.pet.name, 'Lv.' + D.pet.lv + ' · 亲密度 ' + (D.pet.exp | 0) + '%', 'pet')
-        + card('🩸', '健康助手', D.health.on ? '记录中' : '周期记录与提醒', 'health')
-        + card('⏰', '情侣闹钟', D.alarms.length ? D.alarms.length + ' 个' : '早安晚安一起响', 'alarm')
-        + card('🛰', '轨迹回放', '把今天的路走一遍', 'replay')
-        + card('🎨', '情侣装扮', THEMES[D.theme || 'pink'].n + ' · 自定义开屏', 'skin')
-        + card('💾', '聊天备份', '导出 / 恢复记录', 'backup')
-        + '</div>';
+        + card('💌', '甜言蜜语', D.greet.length ? D.greet.length + ' 条悄悄话' : '早安午安晚安', 'greet', 0, D.greet.length || '')
+        + card('📔', '心情日记', D.moods.length ? '最近 ' + ago(D.moods[D.moods.length - 1].t) : '记录今天的心情', 'mood', 1, D.moods.length || '')
+        + card('📸', '心动相册', D.photos.length ? D.photos.length + ' 张甜蜜瞬间' : '共享甜蜜瞬间', 'photo', 2, D.photos.length || '')
+        + card('✅', '恋爱清单', '一起完成 ' + listProgress() + ' 件小事', 'list', 3)
+        + card('🧲', '冰箱贴', D.notes.length ? D.notes.length + ' 张留言' : '给 TA 留句话', 'note', 4, D.notes.length || '')
+        + card('🎡', '约会转盘', '今天去哪吃玩', 'idea', 5)
+        + card('🎯', '默契挑战', D.quiz.length ? '最近 ' + D.quiz.length + ' 题' : '看看你懂不懂我', 'quiz', 6, D.quiz.length || '')
+        + card('🐱', D.pet.name, 'Lv.' + D.pet.lv + ' · 亲密度 ' + (D.pet.exp | 0) + '%', 'pet', 7)
+        + card('🩸', '健康助手', D.health.on ? '记录中' : '周期记录与提醒', 'health', 0)
+        + card('⏰', '情侣闹钟', D.alarms.length ? D.alarms.length + ' 个闹钟' : '早安晚安一起响', 'alarm', 1, D.alarms.length || '')
+        + card('🛰', '轨迹回放', '把今天的路走一遍', 'replay', 2)
+        + card('🎨', '情侣装扮', THEMES[D.theme || 'pink'].n + ' · 自定义开屏', 'skin', 3)
+        + card('💾', '聊天备份', '导出 / 恢复记录', 'backup', 4)
+        + '</div>'
+        + '<div class="note" style="margin-top:14px;text-align:center">'
+        + '所有这些都在你们两台手机之间加密传输，没有会员，也没有广告 💕</div>';
     } else if (view === 'greet') {
       v = '<div class="dsec"><h3>甜言蜜语</h3>'
         + '<div class="btngrid" style="margin-bottom:10px">'

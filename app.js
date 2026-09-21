@@ -441,6 +441,7 @@ async function onRaw(message) {
   else if (o.k === 'rep') onPeerReport(o);
   else if (o.k === 'focus') onFocusAsk(o);
   else if (o.k === 'focusOk') onFocusOk(o);
+  else if (o.k === 'd' && window.Daily) window.Daily.onMsg(o);
 }
 /* 对方到某地/离开某地的自动报备 */
 function onPeerReport(o) {
@@ -1249,6 +1250,16 @@ function renderMe() {
     </div>
   </div>
 
+  <div class="card" style="background:linear-gradient(140deg,rgba(255,107,157,.12),rgba(242,78,134,.06))">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 心动日常</h4>
+    <div class="note" style="margin-bottom:10px">
+      恋爱日历 · 每日打卡 · 甜言蜜语 · 心情日记 · 心动相册 · 恋爱清单 ·
+      冰箱贴 · 约会转盘 · 默契挑战 · 萌宠 · 健康助手 · 情侣闹钟 ·
+      轨迹回放 · 聊天备份 · 情侣装扮 —— <b>全部解锁，没有会员</b>。
+    </div>
+    <button class="btn sm" id="btnGoDaily">${Kitty.heart('#fff', 14)} 打开心动日常</button>
+  </div>
+
   <div class="card">
     <h4>${Kitty.glyph('bell', 13)} 报备与提醒</h4>
     <div class="sw"><div class="k">自动报备<em>她到达/离开报备点就通知我</em></div>
@@ -1361,6 +1372,7 @@ function renderMe() {
   });
   $('#btnDemo').onclick = () => { if (S.demo) stopDemo(); else startDemo(); renderMe(); };
   $('#btnReset').onclick = () => { if (confirm('重新走一遍引导？')) { openWelcome(); } };
+  $('#btnGoDaily').onclick = () => { $('#meDrawer').hidden = true; if (window.Daily) window.Daily.open(); };
   $('#btnGoPlaces').onclick = () => {
     $('#meDrawer').hidden = true;
     $$('#seg button').forEach(x => x.classList.toggle('on', x.dataset.tab === 'Peer'));
@@ -1726,6 +1738,63 @@ function renderMeChip() {
 }
 
 
+/* ============ 12.6 心动日常（独立模块 daily.js）的宿主接口 ============ */
+function initDaily() {
+  if (!window.Daily) return;
+  window.Daily.init({
+    publish: o => publish(o),
+    toast: (m, h) => toast(m, h),
+    myId: () => myId(),
+    myName: () => S.name || '我',
+    hearts: n => heartsBurst(n),
+    notify: (t, b) => notifyLocal(t, b),
+    note: (t, body) => showNote(t, body || '', 'ok'),
+    trail: () => peerHistory,
+    showAt: (lat, lng) => {
+      if (!amap) return;
+      if (replayMark) { try { amap.remove(replayMark); } catch (e) {} }
+      replayMark = new AMap.Marker({
+        position: [lng, lat], map: amap, zIndex: 200,
+        content: '<div class="mk peer"><div class="mk-av" style="--ring:#7FD8C4">'
+          + Kitty.heart('#7FD8C4', 26) + '</div></div>'
+      });
+    },
+    exportChat: () => ({
+      v: 1, t: Date.now(), room: S.room,
+      chat: chat, trail: peerHistory, daily: window.Daily.raw()
+    }),
+    importChat: d => {
+      if (d && Array.isArray(d.chat)) {
+        chat.length = 0;
+        d.chat.slice(-500).forEach(m => chat.push(m));
+        renderChat();
+      }
+      if (d && Array.isArray(d.trail) && d.trail.length) {
+        peerHistory = d.trail;
+        try { localStorage.setItem('lklx.trail', JSON.stringify(peerHistory)); } catch (e) {}
+        drawTrail();
+      }
+      if (d && d.daily && window.Daily.importRaw) window.Daily.importRaw(d.daily);
+    },
+    chatCount: () => chat.length,
+    relayPublic: () => !S.relay,
+    setTheme: (k, t) => applyAccent(t)
+  });
+}
+let replayMark = null;
+/* 情侣装扮：换主色（写 CSS 变量，全站生效） */
+function applyAccent(t) {
+  if (!t || !document.body) return;
+  const r = document.documentElement.style;
+  r.setProperty('--p400', t.a);
+  r.setProperty('--p500', t.a);
+  r.setProperty('--p600', t.b);
+  r.setProperty('--p700', t.b);
+  r.setProperty('--p300', t.a);
+  r.setProperty('--line', 'rgba(255,107,157,.16)');
+}
+
+
 /* ============ 13. 引导 ============ */
 let step = 0;
 function openWelcome() {
@@ -1889,6 +1958,7 @@ function checkBrowser() {
 }
 
 function tick() {
+  if (window.Daily) window.Daily.tick();
   if (peer) renderPeer();
   if (peer && !S.demo) { checkPlaces(); }
   if (peer) checkAlerts();
@@ -1972,7 +2042,10 @@ function boot() {
     }
   }
 
+  initDaily();
   renderChat(); renderPeer(); renderTrailPanel(); renderMeChip();
+  if ($('#btnDaily')) $('#btnDaily').onclick = () => { if (window.Daily) window.Daily.open(); };
+  try { if (window.Daily) applyAccent(window.Daily.theme()); } catch (e) {}
 
   if (!S.welcome || !S.room) {
     openWelcome();

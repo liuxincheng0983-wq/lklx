@@ -90,6 +90,23 @@
   <script src="https://webapi.amap.com/maps?v=2.0&key=7b0d626725d843182c34d1023a114d95"></script>
 
 <script src="daily.js?v=13"></script>
+<script>
+/* 测试用：模拟安卓壳的原生桥，让网页以为自己跑在 App 里 */
+window.LKLX = {
+  ok: function(){return '1';},
+  id: function(){return 'da47125bedb';},
+  geo: function(){return JSON.stringify({ok:1,lat:23.1300,lon:113.2640,ac:10,sp:0,t:Date.now(),b:80,sse:1,q:230,err:''});},
+  inbox: function(){return '[]';},
+  peer: function(){return '';},
+  sys: function(){return '{}';},
+  battery: function(){return -1;},
+  sharing: function(){return '1';},
+  cfg: function(a){ if(a){ console.log('cfg write '+a); return 'ok'; } return JSON.stringify({room:'kitty-n6j928az',nm:'刘信成',av:'{\"t\":\"k\",\"c\":\"#FF6B9D\"}',intv:8,enc:true,bg:true,near:500}); },
+  notify: function(t,b){ console.log('notify '+t+' '+b); },
+  vibrate: function(){}, bars: function(){}, nav: function(){}, send: function(){},
+  share: function(){}
+};
+</script>
 <script src="app.js?v=13"></script>
 <script>
   document.getElementById('logoSlot').innerHTML = Kitty.logo(30);

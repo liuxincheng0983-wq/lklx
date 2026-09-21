@@ -1150,3 +1150,53 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
   border-top:1px dashed rgba(255,107,157,.22);font-size:12px;color:#8A6070;font-weight:700}
 .tc-foot .go{margin-left:auto;color:var(--p600);font-weight:900;font-size:12px}
 [data-theme="night"] .tc-foot{color:#D3A6BD}
+
+/* ---------- 时光：双轨对照（我 / 她） ---------- */
+.dualcard{padding:16px 15px 14px}
+.axisrow{display:flex;justify-content:space-between;font-size:9.5px;font-weight:800;
+  color:#C39FB0;padding:0 0 5px;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.lane{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.lane:last-of-type{margin-bottom:0}
+.lname{
+  flex:none;width:38px;font-size:11.5px;font-weight:900;text-align:right;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap
+}
+.lname.me{color:#2C9C86}
+.lname.peer{color:var(--p600)}
+.track{
+  position:relative;flex:1;height:26px;border-radius:9px;
+  background:linear-gradient(180deg,rgba(255,107,157,.07),rgba(255,107,157,.03));
+  border:1px solid rgba(255,107,157,.10);overflow:hidden
+}
+[data-theme="night"] .track{background:rgba(255,255,255,.05)}
+.track::before{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(90deg,rgba(255,107,157,.16) 0 1px,transparent 1px 25%)
+}
+.tseg{position:absolute;top:4px;bottom:4px;border-radius:6px;min-width:3px}
+.tseg.me{background:linear-gradient(180deg,#7FD8C4,#3FBF9E);box-shadow:0 2px 8px -3px rgba(63,191,158,.9)}
+.tseg.peer{background:linear-gradient(180deg,#FF93B9,#F24E86);box-shadow:0 2px 8px -3px rgba(242,78,134,.9)}
+.tseg.live{animation:segPulse 1.9s ease-in-out infinite}
+@keyframes segPulse{0%,100%{opacity:1}50%{opacity:.55}}
+.nowmark{position:absolute;top:-2px;bottom:-2px;width:2px;border-radius:2px;background:#3D1F2B;opacity:.55}
+[data-theme="night"] .nowmark{background:#FFE9F2}
+.lgd{display:flex;align-items:center;gap:12px;margin-top:12px;padding-top:11px;
+  border-top:1px dashed rgba(255,107,157,.22);font-size:11px;font-weight:700;color:#8A6070;flex-wrap:wrap}
+[data-theme="night"] .lgd{color:#D3A6BD}
+.lgd .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.lgd .sw.me{background:linear-gradient(180deg,#7FD8C4,#3FBF9E)}
+.lgd .sw.peer{background:linear-gradient(180deg,#FF93B9,#F24E86)}
+.lgd .sw.now{width:2px;height:11px;border-radius:2px;background:#3D1F2B;margin:0 6px 0 0}
+.lgd .lgdnow{margin-left:auto;color:#B98BA0}
+
+/* 列表里的「我 / 她」标签 + 轨道配色 */
+.twhotag{
+  flex:none;font-size:10px;font-weight:900;padding:2px 8px;border-radius:999px;letter-spacing:.3px
+}
+.twhotag.me{background:linear-gradient(140deg,#DCF5EE,#BFEBDD);color:#1F8471}
+.twhotag.peer{background:linear-gradient(140deg,#FFEFF5,#FFDCE9);color:#D63672}
+.tlitem .tldot.me{border-color:#7FD8C4}
+.tlitem .tldot.me i{background:linear-gradient(140deg,#7FD8C4,#3FBF9E)}
+.tlitem .tldot.peer{border-color:var(--p300)}
+.tlitem.now .tldot.peer{border-color:var(--mint)}
+.tlitem .tm{margin-left:2px}

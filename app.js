@@ -956,6 +956,7 @@ function applyFix(lat, lng, acc, speed, raw) {
   if (S.trail) {
     myTrail.push({ lat: me.lat, lng: me.lng, t: Date.now() });
     if (myTrail.length > 400) myTrail.shift();
+    try { localStorage.setItem('lklx.mytrail', JSON.stringify(myTrail)); } catch (e) {}
     drawTrail();
   }
   renderPeer();
@@ -2253,7 +2254,7 @@ function homeExtraCards() {
   let chatSub = chat.length ? '最近 ' + ago(chat[chat.length - 1].t) : '想说什么就说';
   return [
     ['🗺', '实时地图', peer ? (online ? '她在线 · ' + d[0] + d[1] : '最后 ' + ago(peer.at)) : '看看她在哪', 'map', ''],
-    ['⏳', '时光', tlItems().length ? '今天 ' + tlItems().length + ' 段停留' : '几点到几点在哪', 'timeline', ''],
+    ['⏳', '时光', (function(){var s=tlStays();var n=s.mine.length+s.hers.length;return n?('今天 ' + n + ' 段停留'):'几点到几点在哪';})(), 'timeline', ''],
     ['💬', '悄悄话', chatSub, 'chat', chat.length || ''],
     ['🔔', '自动报备', (S.places || []).length ? (S.places.length + ' 个地点在看着') : '她到了就告诉你', 'places', (S.places || []).length || '']
   ];
@@ -2277,30 +2278,31 @@ function minToDur(min) {
 function renderHomeToday(force) {
   const el = document.getElementById('homeToday');
   if (!el) return;
-  const visits = todayVisits(peerHistory);
-  const now = visits.length ? (visits[visits.length - 1].dwell || 0) : 0;
-  const mine = myLife;
-  const km = (S.tl || []).filter(e => e.day === todayKey()).length;
-  const stepTxt = mine && mine.step ? (mine.step > 9999 ? (mine.step / 1000).toFixed(1) : mine.step) : '—';
-  const stepUnit = mine && mine.step > 9999 ? '万步' : '步';
-  const useTxt = mine && mine.usageGranted ? (mine.usageMs >= 3600000 ? (mine.usageMs / 3600000).toFixed(1) : Math.round(mine.usageMs / 60000)) : '—';
-  const useUnit = mine && mine.usageGranted ? (mine.usageMs >= 3600000 ? '小时' : '分钟') : '';
-  const sig = [visits.length, now, stepTxt, useTxt, km, peer ? peer.n : ''].join('|');
+  const L = tlStays();
+  const nm = (L.mine.length + L.hers.length);
+  const mineLife = myLife;
+  const stepTxt = mineLife && mineLife.step ? (mineLife.step > 9999 ? (mineLife.step / 1000).toFixed(1) : mineLife.step) : '—';
+  const stepUnit = mineLife && mineLife.step > 9999 ? '万步' : '步';
+  const useTxt = mineLife && mineLife.usageGranted ? (mineLife.usageMs >= 3600000 ? (mineLife.usageMs / 3600000).toFixed(1) : Math.round(mineLife.usageMs / 60000)) : '—';
+  const useUnit = mineLife && mineLife.usageGranted ? (mineLife.usageMs >= 3600000 ? '小时' : '分钟') : '';
+  const sig = [nm, L.mine.length, L.hers.length, stepTxt, useTxt, peer ? peer.n : ''].join('|');
   if (!force && sig === renderHomeToday._sig) return;
   renderHomeToday._sig = sig;
 
+  const d = new Date();
+  const all = L.mine.concat(L.hers).sort((a, b) => a.t0 - b.t0);
   el.innerHTML = `<div class="todaycard">
     <div class="tc-head">
       ${Kitty.heart('#FF6B9D', 15)}<b>今日概览</b>
-      <span class="tdate">${todayKey().slice(5).replace('-', ' 月 ')} 日</span>
+      <span class="tdate">${d.getMonth() + 1} 月 ${d.getDate()} 日</span>
     </div>
     <div class="tc-grid">
-      <div class="tc-stat"><b>${visits.length}</b><small>到过的地方</small></div>
+      <div class="tc-stat"><b>${nm}</b><small>今天的停留</small></div>
       <div class="tc-stat"><b>${stepTxt}<small>${stepUnit}</small></b><small>今日步数</small></div>
       <div class="tc-stat"><b>${useTxt}${useUnit ? '<small>' + useUnit + '</small>' : ''}</b><small>屏幕时长</small></div>
     </div>
     <div class="tc-foot">
-      ${visits.length ? '最近一处已经待了 ' + minToDur(now) : '今天还没有记录到停留的地方'}
+      我 ${L.mine.length} 段 · ${esc((peer && peer.n) || '她')} ${L.hers.length} 段${all.length ? '，' + hhmm(all[0].t0) + ' 开始今天' : ''}
       <span class="go" id="tcGo">看时光 ›</span>
     </div>
   </div>`;
@@ -2308,27 +2310,105 @@ function renderHomeToday(force) {
   if (g) g.onclick = () => showTimeline();
 }
 
-/* ---- 时光：把今天的停留拼成一条时间轴 ---- */
-function tlItems() {
-  const day = todayKey();
-  const auto = todayVisits(peerHistory).map(v => ({
-    t0: v.t0, t1: v.t1, lat: v.lat, lng: v.lng, dwell: v.dwell, auto: true
+/* ---- 时光：两个人的脚印叠在一起（我 / 她 各一条轨道） ---- */
+function tlDayStart() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function tlStays() {
+  const d0 = tlDayStart();
+  const conv = (list, who) => todayVisits(list).map(v => ({
+    who, t0: v.t0, t1: v.t1, lat: v.lat, lng: v.lng, dwell: v.dwell, auto: true
   }));
-  const manual = (S.tl || []).filter(e => e.day === day);
-  const items = auto.concat(manual.map(e => ({
-    t0: e.t0, t1: e.t1, lat: e.lat, lng: e.lng, dwell: e.dwell, name: e.name, manual: true, id: e.id
-  })));
-  items.sort((a, b) => a.t0 - b.t0);
-  /* 最后一条如果还接着现在，就标成「进行中」并实时算停留时长 */
-  if (items.length && peer && Date.now() - peer.at < 15 * 60000) {
-    const last = items[items.length - 1];
-    if (peer.at - last.t1 < 20 * 60000) {
+  const mine = conv(myTrail, 'me');
+  const hers = conv(peerHistory, 'peer');
+  (S.tl || []).filter(e => e.day === todayKey()).forEach(e => mine.push({
+    who: 'me', manual: true, id: e.id, name: e.name,
+    t0: e.t0, t1: e.t1, lat: e.lat, lng: e.lng, dwell: e.dwell
+  }));
+  /* 最后一段还接着现在 → 标成进行中，实时算停留 */
+  const live = (arr, refAt) => {
+    if (!arr.length) return;
+    const last = arr[arr.length - 1];
+    if (refAt && Date.now() - refAt < 15 * 60000 && refAt - last.t1 < 20 * 60000) {
       last.t1 = Date.now();
       last.dwell = Math.round((last.t1 - last.t0) / 60000);
       last.live = true;
     }
+  };
+  live(mine, me ? me.at : null);
+  live(hers, peer ? peer.at : null);
+  return { mine, hers, d0 };
+}
+function tlRow(it, i) {
+  const nm = tlName(it, i);
+  const who = it.who === 'peer' ? 'peer' : 'me';
+  const whoName = who === 'peer' ? ((peer && peer.n) || '她') : '我';
+  return `<div class="tlitem ${who}${it.live ? ' now' : ''}">
+    <span class="tldot ${who}"><i></i></span>
+    <div class="tlwrap" style="flex:1;position:relative">
+      <div class="tlcard" data-who="${who}" data-tl="${i}">
+        <div class="tt">
+          <span class="twhotag ${who}">${esc(whoName)}</span>
+          <span class="tm">${hhmm(it.t0)}${it.live ? ' 起' : '–' + hhmm(it.t1)}</span>
+          <span class="tdur">${it.live ? '已停留 ' : '停留 '}${minToDur(it.dwell)}</span>
+        </div>
+        <div class="tplace">${it.manual ? '✎' : '📍'} ${esc(nm)}</div>
+        <div class="tsub">${it.live ? '现在就在这儿' : (it.manual ? '手动记录 · 点一下改名字' : '自动记录 · 点一下起个名字')}</div>
+      </div>
+    </div>
+  </div>`;
+}
+function renderTimeline(force) {
+  const box = document.getElementById('timelineBody');
+  if (!box) return;
+  const { mine, hers, d0 } = tlStays();
+  const dateEl = document.getElementById('tlDate');
+  if (dateEl) {
+    const d = new Date();
+    dateEl.textContent = '今天 · ' + d.getDate() + ' 日 星期' + '日一二三四五六'[d.getDay()];
   }
-  return items;
+  const sig = [mine.length, hers.length, mine.map(x => x.t0 + x.dwell + (x.name || '')).join(','),
+    hers.map(x => x.t0 + x.dwell).join(','), peer ? peer.n : ''].join('|');
+  if (!force && sig === box.dataset.sig) return;
+  box.dataset.sig = sig;
+
+  const segsOf = (arr, who) => arr.map(s => {
+    const L = Math.max(0, (s.t0 - d0) / 86400000 * 100);
+    const W = Math.max(0.8, (s.t1 - s.t0) / 86400000 * 100);
+    const seg = `<i class="tseg ${who}${s.live ? ' live' : ''}" style="left:${L.toFixed(2)}%;width:${Math.min(W, 100 - L).toFixed(2)}%"></i>`;
+    return seg;
+  }).join('');
+  const nowPct = Math.min(100, Math.max(0, (Date.now() - d0) / 86400000 * 100));
+
+  const band = `<div class="card dualcard">
+    <h4>${Kitty.heart('#FF6B9D', 13)} 今天 · 谁在哪
+      <span style="margin-left:auto;font-size:11px;color:var(--ink3)">两条轨道对齐同一天</span></h4>
+    <div class="axisrow"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>
+    <div class="lane">
+      <div class="lname me">我</div>
+      <div class="track me">${segsOf(mine, 'me')}<em class="nowmark" style="left:${nowPct.toFixed(2)}%"></em></div>
+    </div>
+    <div class="lane">
+      <div class="lname peer">${esc((peer && peer.n) || '她')}</div>
+      <div class="track peer">${segsOf(hers, 'peer')}<em class="nowmark" style="left:${nowPct.toFixed(2)}%"></em></div>
+    </div>
+    <div class="lgd">
+      <span><i class="sw me"></i>我 ${mine.length} 段</span>
+      <span><i class="sw peer"></i>${esc((peer && peer.n) || '她')} ${hers.length} 段</span>
+      <span class="lgdnow"><i class="sw now"></i>现在 ${hhmm(Date.now())}</span>
+    </div>
+  </div>`;
+
+  const all = mine.concat(hers).sort((a, b) => a.t0 - b.t0);
+  if (!all.length) {
+    box.innerHTML = band + `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
+      <div>今天还没有记录</div>
+      <div style="font-size:11.5px;margin-top:6px">两个人都打开着 App 时，会自动记下各自在哪停了多久<br>也可以点右上角 ＋ 手动补一条</div></div>`;
+    return;
+  }
+  box.innerHTML = band + `<div class="tlrail">${all.map((it, i) => tlRow(it, i)).join('')}</div>
+    <div class="tlend">今天你 ${mine.length} 段、她 ${hers.length} 段停留${all.length ? '，最早从 ' + hhmm(all[0].t0) + ' 开始' : ''}</div>`;
+  box.querySelectorAll('[data-tl]').forEach(c => {
+    c.onclick = () => tlRename(all[+c.dataset.tl], +c.dataset.tl);
+  });
 }
 function tlKey(it) { return it.lat != null ? it.lat.toFixed(3) + ',' + it.lng.toFixed(3) : ''; }
 function tlName(it, i) {
@@ -2365,50 +2445,6 @@ function tlGeocode(it, k, i) {
   } catch (e) {}
 }
 function isTimelineOpen() { const t = document.getElementById('timeline'); return t && !t.hidden; }
-function renderTimeline(force) {
-  const box = document.getElementById('timelineBody');
-  if (!box) return;
-  const items = tlItems();
-  const dateEl = document.getElementById('tlDate');
-  if (dateEl) {
-    const d = new Date();
-    dateEl.textContent = '今天 · ' + d.getDate() + ' 日 星期' + '日一二三四五六'[d.getDay()];
-  }
-  const sig = items.length + '|' + items.map(x => x.t0 + '_' + x.dwell + '_' + (x.name || '')).join(',') + '|' + (peer ? peer.n : '');
-  if (!force && sig === box.dataset.sig) return;
-  box.dataset.sig = sig;
-
-  if (!items.length) {
-    box.innerHTML = `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
-      <div>今天还没有记录</div>
-      <div style="font-size:11.5px;margin-top:6px">双方都打开着 App 时，会自动记下你在哪停了多久<br>也可以点右上角 ＋ 手动补一条</div></div>`;
-    return;
-  }
-  const rows = items.map((it, i) => {
-    const nm = tlName(it, i);
-    return `<div class="tlitem${it.live ? ' now' : ''}">
-      <span class="tldot"><i></i></span>
-      <div class="tlwrap" style="flex:1;position:relative">
-        <div class="tlcard" data-tl="${i}">
-          <div class="tt">
-            <span class="tm">${hhmm(it.t0)}${it.live ? ' 起' : ' – ' + hhmm(it.t1)}</span>
-            <span class="tdur">${it.live ? '已停留 ' : '停留 '}${minToDur(it.dwell)}</span>
-          </div>
-          <div class="tplace">${it.manual ? '✎' : '📍'} ${esc(nm)}</div>
-          <div class="tsub">${it.live ? '现在就在这儿' : (it.manual ? '手动记录' : '自动记录 · 点一下可以给它起个名字')}</div>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-  box.innerHTML = `<div class="tlrail">${rows}</div>
-    <div class="tlend">今天的路线就是这样 · 共 ${items.length} 段停留${items[0] ? '，从 ' + hhmm(items[0].t0) + ' 开始' : ''}</div>`;
-  box.querySelectorAll('[data-tl]').forEach(c => {
-    c.onclick = () => {
-      const it = items[+c.dataset.tl];
-      tlRename(it, +c.dataset.tl);
-    };
-  });
-}
 function tlRename(it, i) {
   const cur = it.name || (it.lat != null ? ((S.tlNames || {})[tlKey(it)] || '') : '');
   uiPrompt('这个地方叫什么？', cur, v => {
@@ -2764,6 +2800,8 @@ function boot() {
 
   const savedTrail = load('lklx.trail');
   if (savedTrail && Array.isArray(savedTrail)) peerHistory = savedTrail;
+  const savedMy = load('lklx.mytrail');
+  if (savedMy && Array.isArray(savedMy)) myTrail = savedMy;
 
   // 网页端存储空了（本地 HTTP 端口变了 / 清了缓存）就从原生配置补回来，不用重新输暗号
   if ((!S.room || !S.welcome) && hasNative()) {

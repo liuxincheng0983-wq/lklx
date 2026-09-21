@@ -1504,7 +1504,13 @@ function bindUI() {
   };
   dz.addEventListener('touchend', endDrag);
   dz.addEventListener('touchcancel', endDrag);
-  dz.addEventListener('click', () => { if (dz.dataset.moved) { dz.dataset.moved = ''; return; } snapTo(snapIndex() === 0 ? 1 : 0); });
+  dz.addEventListener('click', e => {
+    // 分段按钮也在拖拽区里，点它不能顺带把抽屉收起来（之前就是这样：
+    // 点「足迹」抽屉会自己缩回去）
+    if (e.target.closest('.seg')) return;
+    if (dz.dataset.moved) { dz.dataset.moved = ''; return; }
+    snapTo(snapIndex() === 0 ? 1 : 0);
+  });
 
   $$('#seg button').forEach(b => b.onclick = () => {
     goSeg(b.dataset.tab);

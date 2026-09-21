@@ -1570,16 +1570,6 @@ function renderMe() {
     </div>
   </div>
 
-  <div class="card" style="background:linear-gradient(140deg,rgba(255,107,157,.12),rgba(242,78,134,.06))">
-    <h4>${Kitty.heart('#FF6B9D', 13)} 心动日常</h4>
-    <div class="note" style="margin-bottom:10px">
-      恋爱日历 · 每日打卡 · 甜言蜜语 · 心情日记 · 心动相册 · 恋爱清单 ·
-      冰箱贴 · 约会转盘 · 默契挑战 · 萌宠 · 健康助手 · 情侣闹钟 ·
-      轨迹回放 · 聊天备份 · 情侣装扮 —— <b>全部解锁，没有会员</b>。
-    </div>
-    <button class="btn sm" id="btnGoDaily">${Kitty.heart('#fff', 14)} 打开心动日常</button>
-  </div>
-
   <div class="card">
     <h4>${Kitty.glyph('bell', 13)} 报备与提醒</h4>
     <div class="sw"><div class="k">自动报备<em>她到达/离开报备点就通知我</em></div>
@@ -1695,7 +1685,8 @@ function renderMe() {
   });
   $('#btnDemo').onclick = () => { if (S.demo) stopDemo(); else startDemo(); renderMe(); };
   $('#btnReset').onclick = () => { uiConfirm('重新走一遍引导？', ok => { if (ok) openWelcome(); }); };
-  $('#btnGoDaily').onclick = () => { $('#meDrawer').hidden = true; if (window.Daily) window.Daily.open(); };
+  const bd = document.getElementById('btnGoDaily');
+  if (bd) bd.onclick = () => { $('#meDrawer').hidden = true; if (window.Daily) window.Daily.open(); };
   $('#btnGoPlaces').onclick = () => {
     $('#meDrawer').hidden = true;
     $$('#seg button').forEach(x => x.classList.toggle('on', x.dataset.tab === 'Peer'));

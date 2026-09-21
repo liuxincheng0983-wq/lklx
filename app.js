@@ -411,6 +411,8 @@ function warnCard() {
 }
 function setConn(state) {
   const d = $('#dot'), t = $('#connText');
+  const d2 = document.getElementById('dot2'), t2 = document.getElementById('connText2');
+  if (d2 && t2 && d) { d2.className = d.className; t2.textContent = t.textContent; }
   if (S.demo) { d.className = 'dot demo'; t.textContent = '演示模式'; return; }
   if (state === 'warn') { d.className = 'dot warn'; t.textContent = '未加密共享中'; }
   else if (state === 'on') {
@@ -1443,6 +1445,21 @@ window.lklxBack = function () {
 };
 
 /* ============ 12. 交互 ============ */
+/* 首页上的按钮：地图、悄悄话、报备、我的 */
+function bindHome() {
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on('btnHome', showHome);
+  on('meChip2', () => { renderMe(); $('#meDrawer').hidden = false; });
+  on('btnSet', () => { renderMe(); $('#meDrawer').hidden = false; });
+  renderMeChip();
+}
+/* 从首页点进来的功能卡 */
+function homeAction(key) {
+  if (key === 'map') { showMap(); goSeg('Peer'); return true; }
+  if (key === 'chat') { showMap(); goSeg('Chat'); $('#sheet').className = 'sheet half'; return true; }
+  if (key === 'places') { showMap(); goSeg('Peer'); $('#sheet').className = 'sheet up'; return true; }
+  return false;
+}
 /* 切到某个分段（她/足迹/悄悄话），导航重建后统一从这里走 */
 function goSeg(tab) {
   $$('#seg button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
@@ -1734,6 +1751,12 @@ function trailStats(list) {
 
 /* 右上角「我的」头像 */
 function renderMeChip() {
+  const el2 = document.getElementById('meAv2');
+  if (el2) {
+    el2.innerHTML = Kitty.avatarHTML(S.avatar, 46);
+    const im = el2.querySelector('img');
+    if (im) { im.style.width = '100%'; im.style.height = '100%'; im.style.objectFit = 'cover'; }
+  }
   const el = $('#meAv');
   if (!el) return;
   el.innerHTML = Kitty.avatarHTML
@@ -1784,6 +1807,26 @@ function initDaily() {
     },
     chatCount: () => chat.length,
     relayPublic: () => !S.relay,
+    extraCards: () => homeExtraCards(),
+    action: k => homeAction(k),
+    peerOn: () => !!(peer && (Date.now() - peer.at < 45000)),
+    place: cb => {                       // 反查「我在哪」的地名，用于清单记录
+      if (!amap || !me || !window.AMap) { cb && cb(''); return; }
+      try {
+        AMap.plugin('AMap.Geocoder', () => {
+          const g = new AMap.Geocoder({ radius: 300, extensions: 'base' });
+          g.getAddress([me.lng, me.lat], (st, res) => {
+            let out = '';
+            if (st === 'complete' && res && res.regeocode) {
+              const c = res.regeocode.addressComponent || {};
+              out = [c.city || c.province, c.district, (res.regeocode.pois && res.regeocode.pois[0] || {}).name]
+                .filter(Boolean).join(' · ');
+            }
+            cb && cb(out || (me.lat.toFixed(4) + ',' + me.lng.toFixed(4)));
+          });
+        });
+      } catch (e) { cb && cb(''); }
+    },
     myAvatar: () => Kitty.avatarHTML(S.avatar, 52),
     peerAvatar: () => Kitty.avatarHTML((peer && peer.av) || { t: 'k', c: '#FFC9DD' }, 52),
     peerName: () => (peer && peer.n) || 'TA',
@@ -1807,6 +1850,34 @@ function applyAccent(t) {
   r.setProperty('--line', 'rgba(255,107,157,.16)');
 }
 
+
+
+/* ============ 12.7 首页 ⇄ 地图 ============ */
+function showHome() {
+  const app = document.getElementById('app');
+  if (app) app.classList.remove('mapmode');
+  const h = $('#home'); if (h) h.hidden = false;
+  if (window.Daily) { try { window.Daily.home(); } catch (e) {} }
+}
+function showMap() {
+  const app = document.getElementById('app');
+  if (app) app.classList.add('mapmode');
+  const h = $('#home'); if (h) h.hidden = true;
+  // 保险起见再让高德量一次尺寸（正常情况画布尺寸一直是对的）
+  setTimeout(() => { try { if (map && map.resize) map.resize(); } catch (e) {} }, 80);
+}
+/* 首页上的功能卡（地图/悄悄话/报备这些原生功能由 app.js 提供） */
+function homeExtraCards() {
+  const d = peer ? fmtDist(haversine(me, peer)) : null;
+  const online = peer && (Date.now() - peer.at < 45000);
+  const t = Date.now() / 1000;
+  let chatSub = chat.length ? '最近 ' + ago(chat[chat.length - 1].t) : '想说什么就说';
+  return [
+    ['🗺', '实时地图', peer ? (online ? '她在线 · ' + d[0] + d[1] : '最后 ' + ago(peer.at)) : '看看她在哪', 'map', ''],
+    ['💬', '悄悄话', chatSub, 'chat', chat.length || ''],
+    ['🔔', '自动报备', (S.places || []).length ? (S.places.length + ' 个地点在看着') : '她到了就告诉你', 'places', (S.places || []).length || '']
+  ];
+}
 
 /* ============ 13. 引导 ============ */
 let step = 0;
@@ -1884,6 +1955,7 @@ function finishWelcome() {
   renderMe(); renderPeer();
   $('#sheet').className = 'sheet half';
   goSeg('Peer');
+  showHome();
   toast('开始共享位置 💕', true);
   heartsBurst(8);
 }
@@ -2065,8 +2137,9 @@ function boot() {
 
   initDaily();
   renderChat(); renderPeer(); renderTrailPanel(); renderMeChip();
-  if ($('#btnDaily')) $('#btnDaily').onclick = () => { if (window.Daily) window.Daily.open(); };
+  bindHome();
   try { if (window.Daily) applyAccent(window.Daily.theme()); } catch (e) {}
+  if (S.welcome && S.room) showHome();
 
   if (!S.welcome || !S.room) {
     openWelcome();

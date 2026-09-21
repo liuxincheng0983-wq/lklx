@@ -810,3 +810,100 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
   border:1px solid rgba(255,255,255,.9)}
 .notecard .ntitle{font-weight:900;color:#43222F}
 .geobar{border-radius:18px}
+
+/* ===========================================================
+   首页（恋爱天数 + 功能宫格）—— 打开 App 第一眼看到的
+   =========================================================== */
+#maplayer{position:absolute;inset:0;transition:opacity .18s ease}
+/* 回首页时把地图整层淡出、不吃触摸事件，但保留尺寸 ——
+   用 display:none 会让高德的画布变成 0×0，切回来就成灰屏了 */
+#app:not(.mapmode) #maplayer{opacity:0;pointer-events:none}
+#app.mapmode #home{display:none}
+#home{
+  position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;
+  background:
+    radial-gradient(120% 46% at 50% 0%, #FFD9E8 0%, rgba(255,217,232,0) 62%),
+    radial-gradient(90% 40% at 100% 90%, #F0E6FF 0%, rgba(240,230,255,0) 60%),
+    linear-gradient(180deg,#FFF3F8 0%,#FFF8FB 45%,#FDF1F7 100%);
+}
+#home[hidden]{display:none!important}
+[data-theme="night"] #home{background:linear-gradient(180deg,#2A1223,#33132A 60%,#3A1230)}
+
+.htop{
+  flex:none;display:flex;align-items:center;gap:10px;
+  padding:calc(var(--sat) + 12px) 16px 8px
+}
+.htop .hbrand{flex:1;text-align:center;line-height:1.15}
+.htop .hbrand b{font-size:19px;font-weight:900;letter-spacing:.6px;
+  background:linear-gradient(120deg,var(--p500),var(--p700));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.htop .hbrand small{display:flex;align-items:center;justify-content:center;gap:5px;
+  font-size:10.5px;color:#B98BA0;font-weight:700;margin-top:2px}
+.htop .hbrand .dot{width:6px;height:6px}
+
+.hscroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px 14px calc(var(--sab) + 26px)}
+.hsection{
+  display:flex;align-items:center;gap:9px;margin:18px 2px 11px;
+  font-size:14px;font-weight:900;color:#5C3444
+}
+.hsection::before{content:"";width:5px;height:16px;border-radius:3px;
+  background:linear-gradient(180deg,var(--p400),var(--p700))}
+.hsection::after{content:"";flex:1;height:1px;
+  background:linear-gradient(90deg,rgba(255,107,157,.25),transparent)}
+.hfoot{text-align:center;font-size:11px;color:#C39FB0;margin:20px 0 6px;line-height:1.6}
+
+/* 宫格：3 列，心动日常那种彩色小格子 */
+.hgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.hcard{
+  position:relative;overflow:hidden;display:flex;flex-direction:column;align-items:center;
+  gap:6px;padding:14px 6px 12px;border-radius:22px;text-align:center;
+  border:1px solid rgba(255,255,255,.9);
+  box-shadow:0 12px 24px -18px rgba(214,54,114,.7);
+  transition:transform .16s
+}
+.hcard:active{transform:scale(.95)}
+.hcard::after{content:"";position:absolute;right:-24px;top:-26px;width:70px;height:70px;
+  border-radius:50%;background:rgba(255,255,255,.55);pointer-events:none}
+.hcard .he{
+  width:46px;height:46px;border-radius:16px;display:grid;place-items:center;font-size:23px;
+  background:rgba(255,255,255,.95);box-shadow:0 8px 16px -10px rgba(120,0,50,.55);
+  position:relative;z-index:1
+}
+.hcard b{font-size:12.5px;font-weight:900;color:#4A2436;position:relative;z-index:1;letter-spacing:.2px}
+.hcard small{font-size:10px;color:#8A6070;line-height:1.3;position:relative;z-index:1;
+  max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hcard .hbadge{
+  position:absolute;top:9px;right:9px;z-index:2;min-width:19px;padding:2px 6px;border-radius:999px;
+  font-size:10px;font-weight:800;background:linear-gradient(135deg,var(--xd2,var(--p500)),var(--xd3,var(--p700)));
+  color:#fff;box-shadow:0 4px 10px -4px rgba(240,65,122,.8)
+}
+.hcard.wide{grid-column:span 2}
+[data-theme="night"] .hcard{background:linear-gradient(140deg,#3E1C33,#4A2340);border-color:rgba(255,143,177,.16)}
+[data-theme="night"] .hcard b{color:#FFE9F2}
+
+/* 地图层的返回按钮 */
+.backbtn{
+  width:40px;height:40px;flex:none;border-radius:50%;font-size:24px;line-height:1;
+  color:var(--p700);background:linear-gradient(140deg,#fff,#FFF0F6);
+  border:1px solid rgba(255,255,255,.9);box-shadow:0 10px 22px -14px rgba(214,54,114,.85);
+  display:grid;place-items:center;padding-bottom:3px
+}
+.backbtn2{
+  width:36px;height:36px;flex:none;border-radius:50%;font-size:24px;line-height:1;margin-right:2px;
+  color:var(--p700);background:linear-gradient(140deg,#fff,#FFF0F6);
+  border:1px solid rgba(255,255,255,.9);box-shadow:0 8px 18px -12px rgba(214,54,114,.8);
+  display:grid;place-items:center;padding-bottom:3px
+}
+/* 清单里的「完成记录」 */
+.rec{display:flex;align-items:center;gap:8px;margin:2px 0 4px 35px;flex-wrap:wrap}
+.rec img{width:44px;height:44px;border-radius:12px;object-fit:cover;
+  box-shadow:0 6px 14px -8px rgba(120,0,50,.6)}
+.rec .rtag{font-size:10.5px;font-weight:700;color:#8A6070;background:rgba(255,255,255,.9);
+  border:1px solid rgba(255,255,255,.9);border-radius:999px;padding:3px 9px;
+  max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recform{margin:4px 0 10px 35px;padding:12px;border-radius:18px;
+  background:linear-gradient(140deg,#FFF6FA,#FFEFF6);border:1px solid rgba(255,255,255,.95);
+  box-shadow:0 12px 24px -20px rgba(214,54,114,.8)}
+.recform .row2{display:flex;gap:8px;margin-top:9px}
+.recform .thumb{width:64px;height:64px;border-radius:14px;object-fit:cover;
+  border:2px solid #fff;box-shadow:0 8px 16px -10px rgba(120,0,50,.6)}

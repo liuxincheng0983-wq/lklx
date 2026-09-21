@@ -17,7 +17,7 @@
     greet: [],                 // 甜言蜜语 [{t,from,kind,txt}]
     moods: [],                 // 心情日记 [{t,from,m,txt}]
     photos: [],                // 相册 [{id,t,from,data,cap}]
-    list: [],                  // 恋爱清单 [{id,txt,done:{me,peer}}]
+    list: [],                  // 恋爱清单 [{id,txt,done:{me,peer},rec:{data,place,t,from}}]
     notes: [],                 // 冰箱贴 [{id,t,from,txt,color}]
     quiz: [],                  // 默契挑战 [{id,q,ans,from,t}]
     quizPool: [],              // 本局配对中的题目
@@ -30,6 +30,8 @@
   var D = Object.assign({}, DEF, JSON.parse(localStorage.getItem(KEY) || 'null') || {});
   var H = null;               // host：由 app.js 注入
   var view = 'home';
+  var recEdit = null;      // 正在补记录的清单条目 {id,data,place,t}
+  var selectedPhoto = null;
 
   function save() { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch (e) {} }
   function esc(s) {
@@ -204,7 +206,9 @@
     save();
     send('list', { id: id, me: it.done.me });
     if (it.done.me && it.done.peer) { note('🎉 你们完成了：<b>' + esc(it.txt) + '</b>'); petGain(10); }
-    render();
+    // 打勾之后直接问一句「要不要加照片和地点」——比藏在菜单里好找
+    if (it.done.me && !it.rec) openRec(id);
+    else { recEdit = null; render(); }
   }
   function onListItem(item) {
     var it = D.list.filter(function (x) { return x.id === item.id; })[0]; if (!it) return;
@@ -463,6 +467,7 @@
       case 'mood': onMood(o.item); break;
       case 'photo': onPhoto(o.item); break;
       case 'list': onListItem(o.item); break;
+      case 'listRec': onListRec(o.item); break;
       case 'note': onNote(o.item); break;
       case 'quiz': onQuiz(o.item); break;
       case 'quizNew': onQuizNew(o.item); break;
@@ -476,6 +481,72 @@
     if (view === 'home') render();
   }
   function note(html) { if (H && H.note) H.note('心动日常', html); }
+
+  /* ---------------- 首页（打开 App 第一眼） ---------------- */
+  function renderHome() {
+    var hero = document.getElementById('homeHero');
+    var grid = document.getElementById('homeGrid');
+    if (!hero || !grid) return;
+    var today = D.love[dayKey()] || {};
+    var meName = H.myName ? H.myName() : '我';
+    var peName = H.peerName ? H.peerName() : 'TA';
+    var pe = H.peerOn ? H.peerOn() : false;
+
+    hero.innerHTML =
+      '<div class="dhero">'
+      + '<div class="dpair">'
+      + '<div class="pav2">' + H.myAvatar() + '</div>'
+      + '<div class="dheart">' + H.heart('#FFFFFF', 24) + '</div>'
+      + '<div class="pav2">' + H.peerAvatar() + '</div>'
+      + '<div class="dnames">' + esc(meName) + ' & ' + esc(peName)
+      + (pe ? ' · 在线' : '') + '</div>'
+      + '</div>'
+      + '<div class="dh1">' + (D.since ? '我们已经在一起 <b>' + loveDays() + '</b> 天' : '写下你们在一起的那天') + '</div>'
+      + '<div class="dh2">连续打卡 ' + streak() + ' 天'
+      + (today.peer ? ' · TA 今天也说过了 💕' : (today.me ? ' · 等 TA 回你一句' : '')) + '</div>'
+      + loveStrip()
+      + '<button class="btnLoveHero' + (today.me ? ' done' : '') + '" id="btnLove">'
+      + (today.me ? '✓ 今天已经说过「我爱你」' : '对她说「我爱你」💕') + '</button>'
+      + (D.since ? '' : '<button class="btn sm ghost" id="btnSince" style="margin-top:9px">设置恋爱纪念日 / 见面日</button>')
+      + '</div>';
+
+    var extra = (H.extraCards && H.extraCards()) || [];
+    var cards = extra.concat([
+      ['💌', '甜言蜜语', D.greet.length ? D.greet.length + ' 条悄悄话' : '早安午安晚安', 'greet', D.greet.length || ''],
+      ['📔', '心情日记', D.moods.length ? '最新 ' + ago(D.moods[D.moods.length - 1].t) : '记录今天的心情', 'mood', D.moods.length || ''],
+      ['📸', '心动相册', D.photos.length ? D.photos.length + ' 张甜蜜瞬间' : '共享甜蜜瞬间', 'photo', D.photos.length || ''],
+      ['✅', '恋爱清单', '一起完成 ' + listProgress() + ' 件小事', 'list', ''],
+      ['🧲', '冰箱贴', D.notes.length ? D.notes.length + ' 张留言' : '给 TA 留句话', 'note', D.notes.length || ''],
+      ['🎡', '约会转盘', '今天去哪吃玩', 'idea', ''],
+      ['🎯', '默契挑战', D.quiz.length ? '最近 ' + D.quiz.length + ' 题' : '看看你懂不懂我', 'quiz', D.quiz.length || ''],
+      ['🐱', D.pet.name, 'Lv.' + D.pet.lv + ' · 亲密度 ' + (D.pet.exp | 0) + '%', 'pet', ''],
+      ['🩸', '健康助手', D.health.on ? '记录中' : '周期记录与提醒', 'health', ''],
+      ['⏰', '情侣闹钟', D.alarms.length ? D.alarms.length + ' 个闹钟' : '早安晚安一起响', 'alarm', D.alarms.length || ''],
+      ['🛰', '轨迹回放', '把走过的路走一遍', 'replay', ''],
+      ['🎨', '情侣装扮', THEMES[D.theme || 'pink'].n, 'skin', ''],
+      ['💾', '聊天备份', '导出 / 恢复记录', 'backup', '']
+    ]);
+    grid.innerHTML = cards.map(function (c, i) {
+      return '<button class="hcard g' + ((i % 8) + 1) + '" data-go="' + c[3] + '">'
+        + (c[4] ? '<span class="hbadge">' + c[4] + '</span>' : '')
+        + '<span class="he">' + c[0] + '</span><b>' + c[1] + '</b><small>' + c[2] + '</small></button>';
+    }).join('');
+
+    var b1 = document.getElementById('btnLove'); if (b1) b1.onclick = checkin;
+    var b2 = document.getElementById('btnSince'); if (b2) b2.onclick = askSince;
+    grid.querySelectorAll('[data-go]').forEach(function (b) {
+      b.onclick = function () {
+        var k = b.dataset.go;
+        if (H.action && H.action(k)) return;   // 地图/悄悄话/报备归 app.js 管
+        open(k);
+      };
+    });
+  }
+  function askSince() {
+    var v = prompt('恋爱纪念日（格式 2024-05-20）', D.since || dayKey());
+    if (!v) return;
+    D.since = v.trim(); save(); send('since', { since: D.since }); renderHome(); render();
+  }
 
   /* ---------------- 界面 ---------------- */
   function card(emoji, title, sub, key, gi, badge) {
@@ -499,44 +570,7 @@
     if (!el) return;
     var today = D.love[dayKey()] || {};
     var v = '';
-    if (view === 'home') {
-      var meName = H.myName ? H.myName() : '我';
-      var peName = H.peerName ? H.peerName() : 'TA';
-      var todayLove = !!today.me;
-      v = '<div class="dhero">'
-        + '<div class="dpair">'
-        + '<div class="pav2">' + H.myAvatar() + '</div>'
-        + '<div class="dheart">' + H.heart('#FFFFFF', 24) + '</div>'
-        + '<div class="pav2">' + H.peerAvatar() + '</div>'
-        + '<div class="dnames">' + esc(meName) + ' & ' + esc(peName) + '</div>'
-        + '</div>'
-        + '<div class="dh1">' + (D.since ? '我们已经在一起 <b>' + loveDays() + '</b> 天' : '写下你们在一起的那天') + '</div>'
-        + '<div class="dh2">连续打卡 ' + streak() + ' 天'
-        + (today.peer ? ' · TA 今天也说过了 💕' : (todayLove ? ' · 等 TA 回你一句' : '')) + '</div>'
-        + loveStrip()
-        + '<button class="btnLoveHero' + (todayLove ? ' done' : '') + '" id="btnLove">'
-        + (todayLove ? '✓ 今天已经说过「我爱你」' : '对她说「我爱你」💕') + '</button>'
-        + (D.since ? '' : '<button class="btn sm ghost" id="btnSince" style="margin-top:9px">'
-            + '设置恋爱纪念日 / 见面日</button>')
-        + '</div>'
-        + '<div class="dsec" style="margin:16px 2px 10px"><h3 style="font-size:15px">💗 我们的小日常</h3></div>'
-        + '<div class="dgrid">'
-        + card('💌', '甜言蜜语', D.greet.length ? D.greet.length + ' 条悄悄话' : '早安午安晚安', 'greet', 0, D.greet.length || '')
-        + card('📔', '心情日记', D.moods.length ? '最近 ' + ago(D.moods[D.moods.length - 1].t) : '记录今天的心情', 'mood', 1, D.moods.length || '')
-        + card('📸', '心动相册', D.photos.length ? D.photos.length + ' 张甜蜜瞬间' : '共享甜蜜瞬间', 'photo', 2, D.photos.length || '')
-        + card('✅', '恋爱清单', '一起完成 ' + listProgress() + ' 件小事', 'list', 3)
-        + card('🧲', '冰箱贴', D.notes.length ? D.notes.length + ' 张留言' : '给 TA 留句话', 'note', 4, D.notes.length || '')
-        + card('🎡', '约会转盘', '今天去哪吃玩', 'idea', 5)
-        + card('🎯', '默契挑战', D.quiz.length ? '最近 ' + D.quiz.length + ' 题' : '看看你懂不懂我', 'quiz', 6, D.quiz.length || '')
-        + card('🐱', D.pet.name, 'Lv.' + D.pet.lv + ' · 亲密度 ' + (D.pet.exp | 0) + '%', 'pet', 7)
-        + card('🩸', '健康助手', D.health.on ? '记录中' : '周期记录与提醒', 'health', 0)
-        + card('⏰', '情侣闹钟', D.alarms.length ? D.alarms.length + ' 个闹钟' : '早安晚安一起响', 'alarm', 1, D.alarms.length || '')
-        + card('🛰', '轨迹回放', '把今天的路走一遍', 'replay', 2)
-        + card('🎨', '情侣装扮', THEMES[D.theme || 'pink'].n + ' · 自定义开屏', 'skin', 3)
-        + card('💾', '聊天备份', '导出 / 恢复记录', 'backup', 4)
-        + '</div>'
-        + '<div class="note" style="margin-top:14px;text-align:center">'
-        + '所有这些都在你们两台手机之间加密传输，没有会员，也没有广告 💕</div>';
+    if (false) {
     } else if (view === 'greet') {
       v = '<div class="dsec"><h3>甜言蜜语</h3>'
         + '<div class="btngrid" style="margin-bottom:10px">'
@@ -573,14 +607,28 @@
     } else if (view === 'list') {
       ensureList();
       v = '<div class="dsec"><h3>恋爱清单 <span class="dhint">' + listProgress() + '</span></h3>'
+        + '<div class="note" style="margin:0 0 12px">做完一件就点一下，可以顺手加上<b>照片、地点和时间</b> —— 以后翻回来就是一本恋爱相册。</div>'
         + '<div class="lbar"><i style="width:' + Math.round(listPct()) + '%"></i></div>'
         + D.list.map(function (it) {
             var both = it.done.me && it.done.peer;
-            return '<div class="lrow' + (both ? ' done' : '') + '">'
+            var rec = it.rec || null;
+            var recHtml = '';
+            if (rec && (rec.data || rec.place || rec.t)) {
+              recHtml = '<div class="rec">'
+                + (rec.data ? '<img src="' + rec.data + '" data-recshot="' + it.id + '">' : '')
+                + (rec.place ? '<span class="rtag">📍 ' + esc(rec.place) + '</span>' : '')
+                + (rec.t ? '<span class="rtag">🕒 ' + dayKey(rec.t) + ' ' + hhmm(rec.t) + '</span>' : '')
+                + '</div>';
+            }
+            var editor = (recEdit && recEdit.id === it.id) ? recForm(it) : '';
+            return '<div class="lwrap"><div class="lrow' + (both ? ' done' : '') + '">'
               + '<button class="lchk' + (it.done.me ? ' on' : '') + '" data-li="' + it.id + '">'
               + (it.done.me ? '✓' : '') + '</button>'
               + '<span class="ltxt">' + esc(it.txt) + '</span>'
-              + '<span class="lwho">' + (it.done.peer ? 'TA✓' : '') + '</span></div>';
+              + '<button class="lrec" data-rec="' + it.id + '" title="加照片/地点/时间">'
+              + (rec ? '✎' : '＋') + '</button>'
+              + '<span class="lwho">' + (it.done.peer ? 'TA✓' : '') + '</span></div>'
+              + recHtml + editor + '</div>';
           }).join('')
         + '</div>';
     } else if (view === 'note') {
@@ -697,6 +745,72 @@
     el.innerHTML = v;
     bind();
   }
+  function recForm(it) {
+    var r = recEdit || {};
+    return '<div class="recform">'
+      + '<div style="font-size:12.5px;font-weight:800;color:#8A6070;margin-bottom:8px">'
+      + '「' + esc(it.txt) + '」的完成记录</div>'
+      + '<div style="display:flex;align-items:center;gap:10px">'
+      + (r.data ? '<img class="thumb" src="' + r.data + '">' : '')
+      + '<button class="btn sm ghost" id="recShot" style="flex:1">'
+      + (r.data ? '换一张照片' : '📷 加张照片') + '</button></div>'
+      + '<div class="field" style="margin-top:10px"><label>在哪里</label>'
+      + '<input id="recPlace" value="' + esc(r.place || '') + '" placeholder="自动定位中…" maxlength="30"></div>'
+      + '<div class="field"><label>什么时候</label>'
+      + '<input id="recTime" type="datetime-local" value="' + toLocalInput(r.t || Date.now()) + '"></div>'
+      + '<div class="row2"><button class="btn sm" id="recSave">保存记录</button>'
+      + '<button class="btn sm ghost" id="recSkip">跳过</button></div>'
+      + '</div>';
+  }
+  function toLocalInput(ts) {
+    var d = new Date(ts - new Date().getTimezoneOffset() * 60000);
+    return d.toISOString().slice(0, 16);
+  }
+  function openRec(id) {
+    var it = D.list.filter(function (x) { return x.id === id; })[0];
+    if (!it) return;
+    recEdit = Object.assign({ id: id, data: null, place: '', t: Date.now() }, it.rec || {});
+    selectedPhoto = null;
+    render();
+    if (H.place) {
+      H.place(function (name) {
+        if (recEdit && recEdit.id === id && name && !recEdit.place) {
+          recEdit.place = name;
+          var f = document.getElementById('recPlace');
+          if (f) f.value = name;
+        }
+      });
+    }
+  }
+  function saveRec() {
+    if (!recEdit) return;
+    var it = D.list.filter(function (x) { return x.id === recEdit.id; })[0];
+    if (!it) return;
+    var pl = document.getElementById('recPlace');
+    var tm = document.getElementById('recTime');
+    var rec = {
+      data: recEdit.data || null,
+      place: (pl ? pl.value : recEdit.place || '').trim(),
+      t: tm && tm.value ? new Date(tm.value).getTime() : Date.now(),
+      from: H.myId()
+    };
+    it.rec = rec;
+    save();
+    send('listRec', { id: it.id, rec: rec });
+    recEdit = null;
+    toast('记录保存好了 📸', true);
+    render();
+  }
+  function onListRec(o) {
+    var it = D.list.filter(function (x) { return x.id === o.id; })[0];
+    if (!it || !o.rec) return;
+    it.rec = o.rec;
+    save();
+    note('📸 <b>TA 完成了「' + esc(it.txt) + '」</b>'
+      + (o.rec.place ? '<br>📍 ' + esc(o.rec.place) : ''));
+    render();
+  }
+
   function listOf(arr, fn, empty) {
     if (!arr || !arr.length) return '<div class="empty">' + empty + '</div>';
     return arr.slice().reverse().slice(0, 60).map(fn).join('');
@@ -707,9 +821,20 @@
   function bind() {
     var el = document.getElementById('dailyBody');
     if (!el) return;
-    el.querySelectorAll('[data-go]').forEach(function (b) { b.onclick = function () { view = b.dataset.go; if (view === 'list') ensureList(); render(); }; });
+    el.querySelectorAll('[data-go]').forEach(function (b) {
+      b.onclick = function () { view = b.dataset.go; if (view === 'list') ensureList(); render(); };
+    });
+    // 首页也可能被重新渲染，顺手把卡片事件接上
+    var hg = document.getElementById('homeGrid');
+    if (hg) hg.querySelectorAll('[data-go]').forEach(function (b) {
+      b.onclick = function () {
+        var k = b.dataset.go;
+        if (H.action && H.action(k)) return;
+        open(k);
+      };
+    });
     var back = document.getElementById('dailyBack');
-    if (back) back.onclick = function () { if (view === 'home') close(); else { view = 'home'; render(); } };
+    if (back) back.onclick = close;
     var b1 = document.getElementById('btnLove'); if (b1) b1.onclick = checkin;
     var b2 = document.getElementById('btnSince'); if (b2) b2.onclick = function () {
       var v = prompt('恋爱纪念日（格式 2024-05-20）', D.since || dayKey());
@@ -731,6 +856,24 @@
       }
     }; });
     el.querySelectorAll('[data-li]').forEach(function (b) { b.onclick = function () { toggleListItem(b.dataset.li); }; });
+    el.querySelectorAll('[data-rec]').forEach(function (b) { b.onclick = function () { openRec(b.dataset.rec); }; });
+    el.querySelectorAll('[data-recshot]').forEach(function (img) {
+      img.onclick = function () {
+        var id = img.dataset.recshot;
+        var it = D.list.filter(function (x) { return x.id === id; })[0];
+        if (it && it.rec && it.rec.data) {
+          var a = document.createElement('a'); a.href = it.rec.data;
+          a.download = '两颗心-' + dayKey(it.rec.t) + '.jpg'; a.click();
+        }
+      };
+    });
+    var rs = document.getElementById('recShot');
+    if (rs) rs.onclick = function () {
+      pickPhoto(function (d) { if (recEdit) { recEdit.data = d; render(); } });
+    };
+    var rv = document.getElementById('recSave'); if (rv) rv.onclick = saveRec;
+    var rk = document.getElementById('recSkip');
+    if (rk) rk.onclick = function () { recEdit = null; render(); };
     el.querySelectorAll('[data-nc]').forEach(function (b) { b.onclick = function () {
       el.querySelectorAll('[data-nc]').forEach(function (x) { x.classList.remove('on'); });
       b.classList.add('on');
@@ -791,14 +934,30 @@
     var b16 = document.getElementById('btnRestore'); if (b16) b16.onclick = restoreChat;
   }
 
-  function open() {
+  function open(key) {
     var el = document.getElementById('daily');
     if (!el) return;
-    view = 'home';
+    view = (key === 'home' || !key) ? 'greet' : key;
+    if (key === 'list') ensureList();
+    var t = document.getElementById('dailyTitle');
+    if (t) t.textContent = TITLES[view] || '心动日常';
     el.hidden = false;
     render();
+    var body = document.getElementById('dailyBody');
+    if (body) body.scrollTop = 0;
   }
-  function close() { var el = document.getElementById('daily'); if (el) el.hidden = true; }
+  function close() {
+    var el = document.getElementById('daily');
+    if (el) el.hidden = true;
+    selectedPhoto = null; recEdit = null;
+    renderHome();
+  }
+  var TITLES = {
+    greet: '甜言蜜语', mood: '心情日记', photo: '心动相册', list: '恋爱清单',
+    note: '冰箱贴', idea: '约会转盘', quiz: '默契挑战', pet: '萌宠',
+    health: '健康助手', alarm: '情侣闹钟', replay: '轨迹回放', skin: '情侣装扮',
+    backup: '聊天备份'
+  };
 
   window.Daily = {
     init: function (host) {
@@ -808,6 +967,9 @@
       setTimeout(splashShow, 300);
     },
     open: open, close: close,
+    home: renderHome,
+    onPeer: function () { renderHome(); },
+    onTick: function () {}, 
     onMsg: onMsg,
     importRaw: function (obj) {
       if (!obj || typeof obj !== 'object') return;

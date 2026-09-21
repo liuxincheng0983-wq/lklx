@@ -1200,3 +1200,30 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
 .tlitem .tldot.peer{border-color:var(--p300)}
 .tlitem.now .tldot.peer{border-color:var(--mint)}
 .tlitem .tm{margin-left:2px}
+
+/* ---------- 时光页顶部：日期条 ---------- */
+.daystrip{
+  flex:none;display:flex;gap:8px;overflow-x:auto;padding:6px 14px 12px;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch
+}
+.daystrip::-webkit-scrollbar{display:none}
+.daychip{
+  flex:none;position:relative;display:flex;flex-direction:column;align-items:center;gap:1px;
+  min-width:54px;padding:8px 10px;border-radius:16px;
+  background:rgba(255,255,255,.72);border:1px solid var(--glass-line);
+  box-shadow:var(--e1);transition:transform .16s,background .2s
+}
+[data-theme="night"] .daychip{background:rgba(74,35,64,.55)}
+.daychip:active{transform:scale(.94)}
+.daychip b{font-size:12.5px;font-weight:900;color:#6E4557;letter-spacing:.2px}
+.daychip small{font-size:9.5px;font-weight:800;color:#C39FB0;font-variant-numeric:tabular-nums}
+.daychip.on{
+  background:linear-gradient(140deg,var(--p500),var(--p700));border-color:transparent;
+  box-shadow:0 10px 22px -12px rgba(214,54,114,.95)
+}
+.daychip.on b,.daychip.on small{color:#fff}
+.daychip.has::after{
+  content:"";position:absolute;top:6px;right:8px;width:5px;height:5px;border-radius:50%;
+  background:var(--mint)
+}
+.daychip.on.has::after{background:#fff}

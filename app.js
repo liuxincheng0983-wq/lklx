@@ -683,9 +683,8 @@ function onPeerPos(o) {
   };
   if (fresh) {
     if (S.trail) {
-      peerHistory.push({ lat: o.lat, lng: o.lon, t: o.t });
-      if (peerHistory.length > 400) peerHistory.shift();
-      localStorage.setItem('lklx.trail', JSON.stringify(peerHistory));
+      trailPush(peerHistory, { lat: o.lat, lng: o.lon, t: o.t });
+      trailSave('lklx.trail', peerHistory);
       drawTrail();
     }
     upsertPeer(peer, true);
@@ -954,9 +953,8 @@ function applyFix(lat, lng, acc, speed, raw) {
   upsertMe(me.lat, me.lng);
   if (!peer && map && !map._inited) { map.setView([me.lat, me.lng], 15); map._inited = true; }
   if (S.trail) {
-    myTrail.push({ lat: me.lat, lng: me.lng, t: Date.now() });
-    if (myTrail.length > 400) myTrail.shift();
-    try { localStorage.setItem('lklx.mytrail', JSON.stringify(myTrail)); } catch (e) {}
+    trailPush(myTrail, { lat: me.lat, lng: me.lng, t: Date.now() });
+    trailSave('lklx.mytrail', myTrail);
     drawTrail();
   }
   renderPeer();
@@ -1169,8 +1167,7 @@ function startDemo() {
     peer.acc = 8 + Math.round(Math.abs(Math.cos(demoAngle)) * 22);
     upsertPeer(peer, false);
     if (S.trail && Math.random() < 0.5) {
-      peerHistory.push({ lat, lng, t: Date.now() });
-      if (peerHistory.length > 400) peerHistory.shift();
+      trailPush(peerHistory, { lat, lng, t: Date.now() });
       drawTrail();
     }
     renderPeer();
@@ -2042,11 +2039,13 @@ function trailStats(list) {
   };
 }
 
-/* 今日到过的地方：把今天的轨迹点按 250 米聚成「停留」，得出到访时间和停留时长 */
-function todayVisits(list) {
-  const day0 = new Date(); day0.setHours(0, 0, 0, 0);
-  const t0 = day0.getTime();
-  const pts = (list || []).filter(p => p && p.t && p.t >= t0).sort((a, b) => a.t - b.t);
+/* 今日到过的地方：把轨迹点按 250 米聚成「停留」，得出到访时间和停留时长。
+   改成可以看任意一天（d0 = 那天 0 点的时间戳）。 */
+const DAY_MS = 86400000;
+function dayStart(ts) { const d = new Date(ts == null ? Date.now() : ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function visitsOn(list, d0) {
+  const a = d0, b = d0 + DAY_MS;
+  const pts = (list || []).filter(p => p && p.t && p.t >= a && p.t < b).sort((x, y) => x.t - y.t);
   const R = 250;
   const clusters = [];
   let cur = null;
@@ -2065,6 +2064,32 @@ function todayVisits(list) {
   return clusters
     .filter(c => (c.t1 - c.t0) >= 2 * 60000)
     .map(c => ({ lat: c.lat, lng: c.lng, t0: c.t0, t1: c.t1, dwell: Math.round((c.t1 - c.t0) / 60000) }));
+}
+function todayVisits(list) { return visitsOn(list, dayStart()); }
+
+/* 轨迹保留 14 天 / 最多 3000 个点，超了就从最老的开始丢 */
+const TRAIL_CAP = 3000, TRAIL_DAYS = 14;
+function trailPush(arr, pt) {
+  arr.push(pt);
+  const cutoff = Date.now() - TRAIL_DAYS * DAY_MS;
+  while (arr.length && (arr.length > TRAIL_CAP || arr[0].t < cutoff)) arr.shift();
+}
+let trailSaveAt = 0, trailSaveTimer = null;
+function trailSave(key, arr) {
+  const now = Date.now();
+  const flush = () => { try { localStorage.setItem(key, JSON.stringify(arr)); } catch (e) {} };
+  if (now - trailSaveAt < 15000) {
+    if (!trailSaveTimer) trailSaveTimer = setTimeout(() => { trailSaveTimer = null; trailSaveAt = Date.now(); flush(); }, 15000);
+    return;
+  }
+  trailSaveAt = now;
+  flush();
+}
+function trailPrune() {
+  const cutoff = Date.now() - TRAIL_DAYS * DAY_MS;
+  [myTrail, peerHistory].forEach(arr => {
+    while (arr.length && (arr.length > TRAIL_CAP || arr[0].t < cutoff)) arr.shift();
+  });
 }
 
 /* 右上角「我的」头像 */
@@ -2310,32 +2335,79 @@ function renderHomeToday(force) {
   if (g) g.onclick = () => showTimeline();
 }
 
-/* ---- 时光：两个人的脚印叠在一起（我 / 她 各一条轨道） ---- */
-function tlDayStart() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
-function tlStays() {
-  const d0 = tlDayStart();
-  const conv = (list, who) => todayVisits(list).map(v => ({
+/* ---- 时光：两个人的脚印叠在一起（我 / 她 各一条轨道，可以翻回前几天） ---- */
+let tlDay = null;                       // 当前查看的那一天（0 点时间戳），null = 今天
+function tlDayKey(ts) {
+  const d = new Date(ts);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function tlStays(dayTs) {
+  const d0 = dayTs == null ? (tlDay == null ? dayStart() : tlDay) : dayTs;
+  const today0 = dayStart();
+  const isToday = d0 >= today0;
+  const key = tlDayKey(d0);
+  const conv = (list, who) => visitsOn(list, d0).map(v => ({
     who, t0: v.t0, t1: v.t1, lat: v.lat, lng: v.lng, dwell: v.dwell, auto: true
   }));
   const mine = conv(myTrail, 'me');
   const hers = conv(peerHistory, 'peer');
-  (S.tl || []).filter(e => e.day === todayKey()).forEach(e => mine.push({
+  (S.tl || []).filter(e => e.day === key).forEach(e => mine.push({
     who: 'me', manual: true, id: e.id, name: e.name,
     t0: e.t0, t1: e.t1, lat: e.lat, lng: e.lng, dwell: e.dwell
   }));
-  /* 最后一段还接着现在 → 标成进行中，实时算停留 */
-  const live = (arr, refAt) => {
-    if (!arr.length) return;
-    const last = arr[arr.length - 1];
-    if (refAt && Date.now() - refAt < 15 * 60000 && refAt - last.t1 < 20 * 60000) {
-      last.t1 = Date.now();
-      last.dwell = Math.round((last.t1 - last.t0) / 60000);
-      last.live = true;
-    }
-  };
-  live(mine, me ? me.at : null);
-  live(hers, peer ? peer.at : null);
-  return { mine, hers, d0 };
+  /* 只有看今天的时候才有「进行中」 */
+  if (isToday) {
+    const live = (arr, refAt) => {
+      if (!arr.length) return;
+      const last = arr[arr.length - 1];
+      if (refAt && Date.now() - refAt < 15 * 60000 && refAt - last.t1 < 20 * 60000) {
+        last.t1 = Date.now();
+        last.dwell = Math.round((last.t1 - last.t0) / 60000);
+        last.live = true;
+      }
+    };
+    live(mine, me ? me.at : null);
+    live(hers, peer ? peer.at : null);
+  }
+  return { mine, hers, d0, isToday, key };
+}
+/* 哪些天有记录（一次算完，给日期条上打点用） */
+function tlDaysWithData() {
+  const s = new Set();
+  const add = arr => (arr || []).forEach(p => { if (p && p.t) s.add(tlDayKey(dayStart(p.t))); });
+  add(myTrail); add(peerHistory);
+  (S.tl || []).forEach(e => { if (e.day) s.add(e.day); });
+  return s;
+}
+function renderDayStrip() {
+  const el = document.getElementById('dayStrip');
+  if (!el) return;
+  const today0 = dayStart();
+  const cur0 = tlDay == null ? today0 : tlDay;
+  const has = tlDaysWithData();
+  const wd = '日一二三四五六';
+  let out = '';
+  for (let i = 13; i >= 0; i--) {
+    const d0 = today0 - i * DAY_MS;
+    const d = new Date(d0);
+    const label = i === 0 ? '今天' : i === 1 ? '昨天' : i === 2 ? '前天' : '周' + wd[d.getDay()];
+    const k = tlDayKey(d0);
+    out += `<button class="daychip${d0 === cur0 ? ' on' : ''}${has.has(k) ? ' has' : ''}" data-d="${d0}">
+      <b>${label}</b><small>${d.getMonth() + 1}/${d.getDate()}</small></button>`;
+  }
+  el.innerHTML = out;
+  el.querySelectorAll('[data-d]').forEach(b => {
+    b.onclick = () => {
+      tlDay = +b.dataset.d;
+      renderTimeline(true);
+      const cur = el.querySelector('.daychip.on');
+      if (cur && cur.scrollIntoView) { try { cur.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' }); } catch (e) {} }
+    };
+  });
+  const cur = el.querySelector('.daychip.on');
+  if (cur && el.scrollLeft === 0) {
+    try { el.scrollLeft = Math.max(0, cur.offsetLeft - el.clientWidth / 2 + cur.clientWidth / 2); } catch (e) {}
+  }
 }
 function tlRow(it, i) {
   const nm = tlName(it, i);
@@ -2359,53 +2431,56 @@ function tlRow(it, i) {
 function renderTimeline(force) {
   const box = document.getElementById('timelineBody');
   if (!box) return;
-  const { mine, hers, d0 } = tlStays();
+  renderDayStrip();
+  const { mine, hers, d0, isToday } = tlStays();
   const dateEl = document.getElementById('tlDate');
-  if (dateEl) {
-    const d = new Date();
-    dateEl.textContent = '今天 · ' + d.getDate() + ' 日 星期' + '日一二三四五六'[d.getDay()];
-  }
-  const sig = [mine.length, hers.length, mine.map(x => x.t0 + x.dwell + (x.name || '')).join(','),
+  const dd = new Date(d0);
+  const wd = '日一二三四五六'[dd.getDay()];
+  const today0 = dayStart();
+  const rel = d0 === today0 ? '今天' : d0 === today0 - DAY_MS ? '昨天' : d0 === today0 - 2 * DAY_MS ? '前天' : null;
+  if (dateEl) dateEl.textContent = (rel ? rel + ' · ' : '') + (dd.getMonth() + 1) + ' 月 ' + dd.getDate() + ' 日 星期' + wd;
+
+  const sig = [d0, mine.length, hers.length, mine.map(x => x.t0 + x.dwell + (x.name || '')).join(','),
     hers.map(x => x.t0 + x.dwell).join(','), peer ? peer.n : ''].join('|');
   if (!force && sig === box.dataset.sig) return;
   box.dataset.sig = sig;
 
   const segsOf = (arr, who) => arr.map(s => {
-    const L = Math.max(0, (s.t0 - d0) / 86400000 * 100);
-    const W = Math.max(0.8, (s.t1 - s.t0) / 86400000 * 100);
-    const seg = `<i class="tseg ${who}${s.live ? ' live' : ''}" style="left:${L.toFixed(2)}%;width:${Math.min(W, 100 - L).toFixed(2)}%"></i>`;
-    return seg;
+    const L = Math.max(0, Math.min(100, (s.t0 - d0) / DAY_MS * 100));
+    const W = Math.max(0.8, (s.t1 - s.t0) / DAY_MS * 100);
+    return `<i class="tseg ${who}${s.live ? ' live' : ''}" style="left:${L.toFixed(2)}%;width:${Math.min(W, 100 - L).toFixed(2)}%"></i>`;
   }).join('');
-  const nowPct = Math.min(100, Math.max(0, (Date.now() - d0) / 86400000 * 100));
+  const nowPct = Math.min(100, Math.max(0, (Date.now() - d0) / DAY_MS * 100));
+  const nowMark = isToday ? `<em class="nowmark" style="left:${nowPct.toFixed(2)}%"></em>` : '';
 
   const band = `<div class="card dualcard">
-    <h4>${Kitty.heart('#FF6B9D', 13)} 今天 · 谁在哪
+    <h4>${Kitty.heart('#FF6B9D', 13)} ${isToday ? '今天' : '这天'} · 谁在哪
       <span style="margin-left:auto;font-size:11px;color:var(--ink3)">两条轨道对齐同一天</span></h4>
     <div class="axisrow"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div>
     <div class="lane">
       <div class="lname me">我</div>
-      <div class="track me">${segsOf(mine, 'me')}<em class="nowmark" style="left:${nowPct.toFixed(2)}%"></em></div>
+      <div class="track me">${segsOf(mine, 'me')}${nowMark}</div>
     </div>
     <div class="lane">
       <div class="lname peer">${esc((peer && peer.n) || '她')}</div>
-      <div class="track peer">${segsOf(hers, 'peer')}<em class="nowmark" style="left:${nowPct.toFixed(2)}%"></em></div>
+      <div class="track peer">${segsOf(hers, 'peer')}${nowMark}</div>
     </div>
     <div class="lgd">
       <span><i class="sw me"></i>我 ${mine.length} 段</span>
       <span><i class="sw peer"></i>${esc((peer && peer.n) || '她')} ${hers.length} 段</span>
-      <span class="lgdnow"><i class="sw now"></i>现在 ${hhmm(Date.now())}</span>
+      <span class="lgdnow">${isToday ? '<i class="sw now"></i>现在 ' + hhmm(Date.now()) : dd.getMonth() + 1 + '/' + dd.getDate() + ' 全天 ' + (mine.length + hers.length) + ' 段'}</span>
     </div>
   </div>`;
 
   const all = mine.concat(hers).sort((a, b) => a.t0 - b.t0);
   if (!all.length) {
     box.innerHTML = band + `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
-      <div>今天还没有记录</div>
+      <div>${isToday ? '今天还没有记录' : '这天没有记录'}</div>
       <div style="font-size:11.5px;margin-top:6px">两个人都打开着 App 时，会自动记下各自在哪停了多久<br>也可以点右上角 ＋ 手动补一条</div></div>`;
     return;
   }
   box.innerHTML = band + `<div class="tlrail">${all.map((it, i) => tlRow(it, i)).join('')}</div>
-    <div class="tlend">今天你 ${mine.length} 段、她 ${hers.length} 段停留${all.length ? '，最早从 ' + hhmm(all[0].t0) + ' 开始' : ''}</div>`;
+    <div class="tlend">${isToday ? '今天' : dd.getMonth() + 1 + ' 月 ' + dd.getDate() + ' 日'}你 ${mine.length} 段、她 ${hers.length} 段停留，最早从 ${hhmm(all[0].t0)} 开始</div>`;
   box.querySelectorAll('[data-tl]').forEach(c => {
     c.onclick = () => tlRename(all[+c.dataset.tl], +c.dataset.tl);
   });
@@ -2464,29 +2539,30 @@ function tlRename(it, i) {
 }
 /* 手动补一条：几点到几点，在哪 */
 function tlAdd() {
+  const base = tlStays().d0;
+  const bd = new Date(base);
   uiDialog({
     title: '补一条位置记录',
-    body: '今天几点到几点、在什么地方。用来补齐没开 App 的时候。',
+    body: (bd.getMonth() + 1) + ' 月 ' + bd.getDate() + ' 日：几点到几点、在什么地方。用来补齐没开 App 的时候。',
     okText: '保存',
     fields: [
       { key: 'name', label: '这是什么地方', type: 'text', value: '', placeholder: '家 / 公司 / 学校…' },
-      { key: 'from', label: '从几点开始', type: 'time', value: hhmm(Date.now() - 3600000) },
-      { key: 'to', label: '到几点结束', type: 'time', value: hhmm(Date.now()) }
+      { key: 'from', label: '从几点开始', type: 'time', value: '09:00' },
+      { key: 'to', label: '到几点结束', type: 'time', value: '10:00' }
     ]
   }).then(v => {
     if (!v) return;
     const nm = (v.name || '').trim();
     if (!nm) { toast('给它起个名字吧'); return; }
-    const d = new Date(); d.setHours(0, 0, 0, 0);
-    const t0 = d.getTime() + hms(v.from);
-    const t1 = d.getTime() + hms(v.to);
+    const t0 = base + hms(v.from);
+    const t1 = base + hms(v.to);
     if (!(t1 > t0)) { toast('结束时间要晚于开始时间'); return; }
     const it = {
-      id: 'tl' + Date.now().toString(36), day: todayKey(), name: nm.slice(0, 12),
+      id: 'tl' + Date.now().toString(36), day: tlDayKey(base), name: nm.slice(0, 12),
       t0, t1, dwell: Math.round((t1 - t0) / 60000),
       lat: me ? +me.lat.toFixed(6) : null, lng: me ? +me.lng.toFixed(6) : null
     };
-    S.tl = (S.tl || []).concat([it]).slice(-200);
+    S.tl = (S.tl || []).concat([it]).slice(-400);
     save();
     publish({ v: 1, k: 'tl', op: 'add', id: myId(), item: it, t: Date.now() });
     renderTimeline(true);
@@ -2517,6 +2593,7 @@ function onPeerTl(o) {
   }
 }
 function showTimeline() {
+  tlDay = null;                     // 从导航进来永远先看今天
   if (window.Daily && window.Daily.close) { try { window.Daily.close(); } catch (e) {} }
   const t = document.getElementById('timeline');
   const h = document.getElementById('home');
@@ -2802,6 +2879,7 @@ function boot() {
   if (savedTrail && Array.isArray(savedTrail)) peerHistory = savedTrail;
   const savedMy = load('lklx.mytrail');
   if (savedMy && Array.isArray(savedMy)) myTrail = savedMy;
+  trailPrune();
 
   // 网页端存储空了（本地 HTTP 端口变了 / 清了缓存）就从原生配置补回来，不用重新输暗号
   if ((!S.room || !S.welcome) && hasNative()) {

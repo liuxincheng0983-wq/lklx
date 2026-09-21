@@ -162,13 +162,10 @@
   }
   function addPhoto(data, cap) {
     var item = { id: rid(), t: Date.now(), from: H.myId(), data: data, cap: cap || '' };
+    // 压缩后一般 100~250KB，公共通道也发得动；更大的就提醒一句
     var pub = H.relayPublic ? H.relayPublic() : true;
-    if (pub && data.length > 3500) {
-      D.photos.unshift(item);
-      if (D.photos.length > 60) D.photos.pop();
-      save(); render();
-      toast('照片存在你手机上了，但公共通道单条只有 4KB 发不出去 —— 在「我的 → 服务器」填上自建地址就能同步', true);
-      return;
+    if (pub && data.length > 400000) {
+      toast('这张有点大（' + Math.round(data.length / 1024) + 'KB），会慢一些；填了自建服务器会快很多', true);
     }
     D.photos.unshift(item);
     if (D.photos.length > 60) D.photos.pop();      // 相册上限 60 张，避免把 localStorage 撑爆

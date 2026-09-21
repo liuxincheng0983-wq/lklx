@@ -162,7 +162,8 @@ function nativePush() {
     LKLX.cfg(JSON.stringify({
       room: S.room || '', nm: S.name || '',
       av: JSON.stringify(S.avatar || { t: 'k', c: '#FF6B9D' }),
-      intv: S.interval || 8, enc: !!S.encrypt, bg: true, near: 500
+      intv: S.interval || 8, enc: !!S.encrypt, bg: true, near: 500,
+      relay: S.relay || '', relayTok: S.relayToken || ''
     }));
   } catch (e) {}
 }
@@ -786,12 +787,13 @@ function blip() {
 
 function connect() {
   if (es) { try { es.close(); } catch (e) {} es = null; }
+  stopPoll();
   if (!S.room || S.demo) { setConn(S.demo ? 'demo' : ''); return; }
   setConn('');
   try {
     const q = S.relayToken ? ('?auth=' + encodeURIComponent(S.relayToken)) : '';
     es = new EventSource(relayBase() + '/' + topicOf(S.room) + '/sse' + q);
-    es.onopen = () => { setConn('on'); };
+    es.onopen = () => { setConn('on'); stopPoll(); };
     es.onmessage = ev => {
       setConn('on');
       let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
@@ -802,7 +804,34 @@ function connect() {
         onRaw(d.message);
       }
     };
-    es.onerror = () => setConn('off');
+    es.onerror = () => { setConn('off'); startPoll(); };
+  } catch (e) { setConn('off'); startPoll(); }
+}
+/* SSE 断了（很多免费/无服务器中转不支持长连接，移动网也会掐长连接）时，
+   退回到轮询，保证还能收到对方的消息，而不是一直显示"连接断开"。 */
+let pollTimer = null, pollSince = 0;
+function startPoll() {
+  if (pollTimer || !S.room || S.demo) return;
+  pollTimer = setInterval(pollOnce, 5000);
+  pollOnce();
+}
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+async function pollOnce() {
+  if (!S.room || S.demo) { stopPoll(); return; }
+  try {
+    const since = pollSince ? String(Math.max(1, Math.floor((Date.now() - pollSince) / 1000) + 5)) + 's' : '60s';
+    const r = await fetch(relayBase() + '/' + topicOf(S.room) + '/json?poll=1&since=' + since,
+      { headers: relayHeaders() });
+    if (!r.ok) { setConn('off'); return; }
+    const lines = (await r.text()).trim().split('\n').filter(Boolean);
+    for (const ln of lines) {
+      let d; try { d = JSON.parse(ln); } catch (e) { continue; }
+      if (d.event !== 'message') continue;
+      if (d.id) { if (seenIds.has(d.id)) continue; seenIds.add(d.id); if (seenIds.size > 300) seenIds.clear(); }
+      await onRaw(d.message);
+    }
+    pollSince = Date.now();
+    if (lines.length) setConn('on');
   } catch (e) { setConn('off'); }
 }
 async function catchUp() {
@@ -1027,6 +1056,8 @@ function quotaToday() {
   return q;
 }
 function quotaLeft() {
+  // 自建服务器没有每日额度
+  if (S.relay) return 999999;
   // 安卓壳里真正在发位置的是后台服务，额度要问它，本地计数器看不到那部分
   if (nativeSharing()) {
     try {
@@ -1052,6 +1083,7 @@ function hoursLeftToday() {
 }
 /* 额度越少，两次发送的间隔越长 —— 自动把额度摊到剩下的一天里 */
 function pubGapMs() {
+  if (S.relay) return Math.max(4000, (S.interval || 8) * 1000);   // 自己的服务器，不用省
   const left = quotaLeft();
   if (left <= 0) return Infinity;
   const perHour = left / hoursLeftToday();
@@ -1062,6 +1094,7 @@ function pubGapMs() {
   return 150000;
 }
 function beatGapMs() {
+  if (S.relay) return 4 * 60 * 1000;                              // 静止时 4 分钟一次
   const left = quotaLeft();
   if (left <= 0) return Infinity;
   const perHour = left / hoursLeftToday();
@@ -1566,7 +1599,8 @@ function renderMe() {
         value="${esc(S.relay || '')}">
       <div class="hint">
         自己买个服务器跑 <b>relay/</b> 目录里那套，就再没有条数限制，
-        报文也只经过你自己的机器。当前：<b>${S.relay ? '自建' : '公共 ntfy.sh'}</b>
+        报文也只经过你自己的机器。<br>
+        当前：<b>${S.relay ? '自建服务器 · 不限条数' : '公共 ntfy.sh · 每天 240 条'}</b>
       </div>
     </div>
     <div class="field">
@@ -1678,9 +1712,12 @@ function renderMe() {
     const raw = $('#inRelay').value.trim();
     const base = (raw || NTFY).replace(/\/+$/, '');
     const url = /^https?:/i.test(base) ? base : 'https://' + base;
+    const t0 = Date.now();
     try {
-      const r = await fetch(url + '/healthz');
-      toast(r.ok ? '服务器在线 ✓' : '服务器回了 ' + r.status, r.ok);
+      const r = await fetch(url + '/healthz', { cache: 'no-store' });
+      const ms = Date.now() - t0;
+      if (r.ok) toast('服务器在线 ✓ ' + ms + ' ms · 已解除每日 240 条限制', true);
+      else toast('服务器回了 HTTP ' + r.status + '（' + ms + ' ms）', false);
     } catch (e) { toast('连不上：' + (e.message || e)); }
   };
 
@@ -2899,6 +2936,7 @@ function boot() {
       if (n.nm) S.name = n.nm;
       if (n.av) { try { S.avatar = JSON.parse(n.av) || S.avatar; } catch (e) {} }
       if (n.intv) S.interval = n.intv;
+      if (n.relay) { S.relay = n.relay; S.relayToken = n.relayTok || ''; }
       S.welcome = true;
       save();
     }

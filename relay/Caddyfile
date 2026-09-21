@@ -1,0 +1,14 @@
+# 两颗心 · 自建中转的 HTTPS 入口（Caddy 版，自动申请证书）
+# 把 relay.example.com 换成你自己的域名，解析指向这台服务器，然后：
+#   sudo cp Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+relay.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8890 {
+		# SSE 必须关掉缓冲，否则消息会被攒着不发，手机端看着像"断了"
+		flush_interval -1
+	}
+	log {
+		output file /var/log/caddy/relay.log
+		format console
+	}
+}

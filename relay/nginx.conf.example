@@ -1,0 +1,32 @@
+# 两颗心 · 自建中转（nginx 版 HTTPS 入口示例）
+# 证书用 certbot 申请：sudo certbot --nginx -d relay.example.com
+server {
+    listen 443 ssl http2;
+    server_name relay.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/relay.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/relay.example.com/privkey.pem;
+
+    client_max_body_size 256k;
+
+    location / {
+        proxy_pass http://127.0.0.1:8890;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # ---- SSE 长连接必须这样设，否则消息会被 nginx 攒着不发 ----
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+        proxy_read_timeout 24h;
+        gzip off;
+    }
+}
+
+server {
+    listen 80;
+    server_name relay.example.com;
+    return 301 https://$host$request_uri;
+}

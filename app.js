@@ -168,10 +168,10 @@ function nativePush() {
 }
 function save() {
   const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-    relay, relayToken, places, reportPeer, focusUntil } = S;
+    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
     { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-      relay, relayToken, places, reportPeer, focusUntil }));
+      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames }));
   nativePush();
 }
 
@@ -535,6 +535,7 @@ async function onRaw(message) {
   else if (o.k === 'focus') onFocusAsk(o);
   else if (o.k === 'focusOk') onFocusOk(o);
   else if (o.k === 'life') onPeerLife(o);
+  else if (o.k === 'tl') onPeerTl(o);
   else if (o.k === 'd' && window.Daily) window.Daily.onMsg(o);
 }
 /* 对方到某地/离开某地的自动报备 */
@@ -590,7 +591,7 @@ function lifeTick() {
   if (now - lifeTickAt < 30000) return;
   lifeTickAt = now;
   const d = lifeNative();
-  if (d) { myLife = d; fillLifeCard(); }
+  if (d) { myLife = d; fillLifeCard(); renderHomeToday(); }
   if (myLife && (myLife.contMin >= 1 || myLife.step > 0 || myLife.usageMs > 0)) {
     if (now - lastLifePub >= 600000 && S.room && !S.demo) {
       lastLifePub = now;
@@ -689,6 +690,8 @@ function onPeerPos(o) {
     }
     upsertPeer(peer, true);
     renderPeer();
+    renderHomeToday();
+    if (isTimelineOpen()) renderTimeline();
     updatePeerAddress();
     updatePeerWeather();
   }
@@ -1732,13 +1735,17 @@ window.lklxBack = function () {
 function bindHome() {
   const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
   on('btnHome', showHome);
-  on('meChip2', () => { renderMe(); $('#meDrawer').hidden = false; });
-  on('btnSet', () => { renderMe(); $('#meDrawer').hidden = false; });
+  on('meChip2', () => { setNav('me'); renderMe(); $('#meDrawer').hidden = false; });
+  on('btnSet', () => { setNav('me'); renderMe(); $('#meDrawer').hidden = false; });
+  on('tlAdd', tlAdd);
+  bindTabbar();
+  setNav('home');
   renderMeChip();
 }
 /* 从首页点进来的功能卡 */
 function homeAction(key) {
   if (key === 'map') { showMap(); goSeg('Peer'); return true; }
+  if (key === 'timeline') { showTimeline(); return true; }
   if (key === 'chat') { showMap(); goSeg('Chat'); $('#sheet').className = 'sheet half'; return true; }
   if (key === 'places') { showMap(); goSeg('Peer'); $('#sheet').className = 'sheet up'; return true; }
   return false;
@@ -2222,14 +2229,19 @@ function renderHomeStatus(force) {
 function showHome() {
   const app = document.getElementById('app');
   if (app) app.classList.remove('mapmode');
+  hideTimeline();
   const h = $('#home'); if (h) h.hidden = false;
+  setNav('home');
   if (window.Daily) { try { window.Daily.home(); } catch (e) {} }
   renderHomeStatus(true);
+  renderHomeToday(true);
 }
 function showMap() {
   const app = document.getElementById('app');
   if (app) app.classList.add('mapmode');
+  hideTimeline();
   const h = $('#home'); if (h) h.hidden = true;
+  setNav('map');
   // 保险起见再让高德量一次尺寸（正常情况画布尺寸一直是对的）
   setTimeout(() => { try { if (map && map.resize) map.resize(); } catch (e) {} }, 80);
 }
@@ -2241,9 +2253,272 @@ function homeExtraCards() {
   let chatSub = chat.length ? '最近 ' + ago(chat[chat.length - 1].t) : '想说什么就说';
   return [
     ['🗺', '实时地图', peer ? (online ? '她在线 · ' + d[0] + d[1] : '最后 ' + ago(peer.at)) : '看看她在哪', 'map', ''],
+    ['⏳', '时光', tlItems().length ? '今天 ' + tlItems().length + ' 段停留' : '几点到几点在哪', 'timeline', ''],
     ['💬', '悄悄话', chatSub, 'chat', chat.length || ''],
     ['🔔', '自动报备', (S.places || []).length ? (S.places.length + ' 个地点在看着') : '她到了就告诉你', 'places', (S.places || []).length || '']
   ];
+}
+
+/* ============================================================
+   v18 · 首页「今日概览」+「时光」时间轴（几点到几点在哪里）
+   ============================================================ */
+function todayKey() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function minToDur(min) {
+  if (min == null) return '—';
+  if (min < 60) return min + ' 分钟';
+  const h = Math.floor(min / 60), m = min % 60;
+  return m ? h + ' 小时 ' + m + ' 分' : h + ' 小时';
+}
+
+/* ---- 首页那一块：今天走过多少、在哪停最久 ---- */
+function renderHomeToday(force) {
+  const el = document.getElementById('homeToday');
+  if (!el) return;
+  const visits = todayVisits(peerHistory);
+  const now = visits.length ? (visits[visits.length - 1].dwell || 0) : 0;
+  const mine = myLife;
+  const km = (S.tl || []).filter(e => e.day === todayKey()).length;
+  const stepTxt = mine && mine.step ? (mine.step > 9999 ? (mine.step / 1000).toFixed(1) : mine.step) : '—';
+  const stepUnit = mine && mine.step > 9999 ? '万步' : '步';
+  const useTxt = mine && mine.usageGranted ? (mine.usageMs >= 3600000 ? (mine.usageMs / 3600000).toFixed(1) : Math.round(mine.usageMs / 60000)) : '—';
+  const useUnit = mine && mine.usageGranted ? (mine.usageMs >= 3600000 ? '小时' : '分钟') : '';
+  const sig = [visits.length, now, stepTxt, useTxt, km, peer ? peer.n : ''].join('|');
+  if (!force && sig === renderHomeToday._sig) return;
+  renderHomeToday._sig = sig;
+
+  el.innerHTML = `<div class="todaycard">
+    <div class="tc-head">
+      ${Kitty.heart('#FF6B9D', 15)}<b>今日概览</b>
+      <span class="tdate">${todayKey().slice(5).replace('-', ' 月 ')} 日</span>
+    </div>
+    <div class="tc-grid">
+      <div class="tc-stat"><b>${visits.length}</b><small>到过的地方</small></div>
+      <div class="tc-stat"><b>${stepTxt}<small>${stepUnit}</small></b><small>今日步数</small></div>
+      <div class="tc-stat"><b>${useTxt}${useUnit ? '<small>' + useUnit + '</small>' : ''}</b><small>屏幕时长</small></div>
+    </div>
+    <div class="tc-foot">
+      ${visits.length ? '最近一处已经待了 ' + minToDur(now) : '今天还没有记录到停留的地方'}
+      <span class="go" id="tcGo">看时光 ›</span>
+    </div>
+  </div>`;
+  const g = document.getElementById('tcGo');
+  if (g) g.onclick = () => showTimeline();
+}
+
+/* ---- 时光：把今天的停留拼成一条时间轴 ---- */
+function tlItems() {
+  const day = todayKey();
+  const auto = todayVisits(peerHistory).map(v => ({
+    t0: v.t0, t1: v.t1, lat: v.lat, lng: v.lng, dwell: v.dwell, auto: true
+  }));
+  const manual = (S.tl || []).filter(e => e.day === day);
+  const items = auto.concat(manual.map(e => ({
+    t0: e.t0, t1: e.t1, lat: e.lat, lng: e.lng, dwell: e.dwell, name: e.name, manual: true, id: e.id
+  })));
+  items.sort((a, b) => a.t0 - b.t0);
+  /* 最后一条如果还接着现在，就标成「进行中」并实时算停留时长 */
+  if (items.length && peer && Date.now() - peer.at < 15 * 60000) {
+    const last = items[items.length - 1];
+    if (peer.at - last.t1 < 20 * 60000) {
+      last.t1 = Date.now();
+      last.dwell = Math.round((last.t1 - last.t0) / 60000);
+      last.live = true;
+    }
+  }
+  return items;
+}
+function tlKey(it) { return it.lat != null ? it.lat.toFixed(3) + ',' + it.lng.toFixed(3) : ''; }
+function tlName(it, i) {
+  if (it.name) return it.name;
+  if (it.lat == null) return '停留点 ' + (i + 1);
+  const k = tlKey(it);
+  const cached = (S.tlNames || {})[k];
+  if (cached) return cached;
+  tlGeocode(it, k, i);
+  return '停留点 ' + (i + 1);
+}
+function tlGeocode(it, k, i) {
+  if (!amap || !window.AMap) return;
+  try {
+    AMap.plugin('AMap.Geocoder', () => {
+      try {
+        const g = new AMap.Geocoder({ radius: 300, extensions: 'base' });
+        g.getAddress([it.lng, it.lat], (st, res) => {
+          if (st !== 'complete' || !res || !res.regeocode) return;
+          const c = res.regeocode.addressComponent || {};
+          const poi = res.regeocode.pois && res.regeocode.pois[0];
+          let out = (poi && poi.name) || c.building || c.streetNumber || c.district || '';
+          if (!out) {
+            const a = res.regeocode.formattedAddress || '';
+            out = a ? a.split(',').slice(0, 2).join(' ') : '';
+          }
+          if (out) {
+            S.tlNames = S.tlNames || {}; S.tlNames[k] = out; save();
+            if (isTimelineOpen()) renderTimeline();
+          }
+        });
+      } catch (e) {}
+    });
+  } catch (e) {}
+}
+function isTimelineOpen() { const t = document.getElementById('timeline'); return t && !t.hidden; }
+function renderTimeline(force) {
+  const box = document.getElementById('timelineBody');
+  if (!box) return;
+  const items = tlItems();
+  const dateEl = document.getElementById('tlDate');
+  if (dateEl) {
+    const d = new Date();
+    dateEl.textContent = '今天 · ' + d.getDate() + ' 日 星期' + '日一二三四五六'[d.getDay()];
+  }
+  const sig = items.length + '|' + items.map(x => x.t0 + '_' + x.dwell + '_' + (x.name || '')).join(',') + '|' + (peer ? peer.n : '');
+  if (!force && sig === box.dataset.sig) return;
+  box.dataset.sig = sig;
+
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
+      <div>今天还没有记录</div>
+      <div style="font-size:11.5px;margin-top:6px">双方都打开着 App 时，会自动记下你在哪停了多久<br>也可以点右上角 ＋ 手动补一条</div></div>`;
+    return;
+  }
+  const rows = items.map((it, i) => {
+    const nm = tlName(it, i);
+    return `<div class="tlitem${it.live ? ' now' : ''}">
+      <span class="tldot"><i></i></span>
+      <div class="tlwrap" style="flex:1;position:relative">
+        <div class="tlcard" data-tl="${i}">
+          <div class="tt">
+            <span class="tm">${hhmm(it.t0)}${it.live ? ' 起' : ' – ' + hhmm(it.t1)}</span>
+            <span class="tdur">${it.live ? '已停留 ' : '停留 '}${minToDur(it.dwell)}</span>
+          </div>
+          <div class="tplace">${it.manual ? '✎' : '📍'} ${esc(nm)}</div>
+          <div class="tsub">${it.live ? '现在就在这儿' : (it.manual ? '手动记录' : '自动记录 · 点一下可以给它起个名字')}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  box.innerHTML = `<div class="tlrail">${rows}</div>
+    <div class="tlend">今天的路线就是这样 · 共 ${items.length} 段停留${items[0] ? '，从 ' + hhmm(items[0].t0) + ' 开始' : ''}</div>`;
+  box.querySelectorAll('[data-tl]').forEach(c => {
+    c.onclick = () => {
+      const it = items[+c.dataset.tl];
+      tlRename(it, +c.dataset.tl);
+    };
+  });
+}
+function tlRename(it, i) {
+  const cur = it.name || (it.lat != null ? ((S.tlNames || {})[tlKey(it)] || '') : '');
+  uiPrompt('这个地方叫什么？', cur, v => {
+    if (v == null) return;
+    v = v.trim();
+    if (!v) return;
+    if (it.manual && it.id) {
+      const e = (S.tl || []).filter(x => x.id === it.id)[0];
+      if (e) { e.name = v; save(); publish({ v: 1, k: 'tl', op: 'add', id: myId(), item: e, t: Date.now() }); }
+    } else {
+      S.tlNames = S.tlNames || {}; S.tlNames[tlKey(it)] = v; save();
+      publish({ v: 1, k: 'tl', op: 'name', id: myId(), key: tlKey(it), name: v, t: Date.now() });
+    }
+    renderTimeline(true);
+    toast('记住啦：' + v, true);
+  });
+}
+/* 手动补一条：几点到几点，在哪 */
+function tlAdd() {
+  uiDialog({
+    title: '补一条位置记录',
+    body: '今天几点到几点、在什么地方。用来补齐没开 App 的时候。',
+    okText: '保存',
+    fields: [
+      { key: 'name', label: '这是什么地方', type: 'text', value: '', placeholder: '家 / 公司 / 学校…' },
+      { key: 'from', label: '从几点开始', type: 'time', value: hhmm(Date.now() - 3600000) },
+      { key: 'to', label: '到几点结束', type: 'time', value: hhmm(Date.now()) }
+    ]
+  }).then(v => {
+    if (!v) return;
+    const nm = (v.name || '').trim();
+    if (!nm) { toast('给它起个名字吧'); return; }
+    const d = new Date(); d.setHours(0, 0, 0, 0);
+    const t0 = d.getTime() + hms(v.from);
+    const t1 = d.getTime() + hms(v.to);
+    if (!(t1 > t0)) { toast('结束时间要晚于开始时间'); return; }
+    const it = {
+      id: 'tl' + Date.now().toString(36), day: todayKey(), name: nm.slice(0, 12),
+      t0, t1, dwell: Math.round((t1 - t0) / 60000),
+      lat: me ? +me.lat.toFixed(6) : null, lng: me ? +me.lng.toFixed(6) : null
+    };
+    S.tl = (S.tl || []).concat([it]).slice(-200);
+    save();
+    publish({ v: 1, k: 'tl', op: 'add', id: myId(), item: it, t: Date.now() });
+    renderTimeline(true);
+    toast('已记下：' + nm, true);
+  });
+}
+function hms(hhmmStr) {
+  const p = String(hhmmStr || '0:0').split(':');
+  return (+p[0] || 0) * 3600000 + (+p[1] || 0) * 60000;
+}
+function onPeerTl(o) {
+  if (o.op === 'name' && o.key) {
+    S.tlNames = S.tlNames || {}; S.tlNames[o.key] = o.name; save();
+    if (isTimelineOpen()) renderTimeline(true);
+    return;
+  }
+  if (o.op === 'add' && o.item) {
+    const it = o.item;
+    if (!(S.tl || []).some(x => x.id === it.id)) {
+      S.tl = (S.tl || []).concat([it]).slice(-200);
+      save();
+      if (isTimelineOpen()) renderTimeline(true);
+      if (it.day === todayKey()) {
+        showNote('📍 ' + (peer && peer.n ? peer.n : '她') + '记了一个地方', 
+          it.name + ' · ' + hhmm(it.t0) + ' – ' + hhmm(it.t1), 'ok');
+      }
+    }
+  }
+}
+function showTimeline() {
+  if (window.Daily && window.Daily.close) { try { window.Daily.close(); } catch (e) {} }
+  const t = document.getElementById('timeline');
+  const h = document.getElementById('home');
+  const app = document.getElementById('app');
+  if (app) app.classList.remove('mapmode');
+  if (h) h.hidden = true;
+  if (t) t.hidden = false;
+  setNav('time');
+  renderTimeline(true);
+}
+function hideTimeline() { const t = document.getElementById('timeline'); if (t) t.hidden = true; }
+
+/* ---- 底部导航 ---- */
+let navCur = 'home';
+function setNav(k) {
+  navCur = k;
+  const bar = document.getElementById('tabbar');
+  if (!bar) return;
+  bar.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.nav === k));
+}
+function bindTabbar() {
+  const bar = document.getElementById('tabbar');
+  if (!bar) return;
+  bar.innerHTML = [
+    ['home', 'home', '首页'],
+    ['map', 'map', '地图'],
+    ['time', 'trail', '时光'],
+    ['me', 'me', '我的']
+  ].map(t => `<button data-nav="${t[0]}">${Kitty.icon(t[1], 23)}<span>${t[2]}</span></button>`).join('');
+  bar.querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.nav;
+      if (k === 'home') { hideTimeline(); showHome(); setNav('home'); }
+      else if (k === 'map') { hideTimeline(); showMap(); goSeg('Peer'); $('#sheet').className = 'sheet half'; setNav('map'); }
+      else if (k === 'time') { showTimeline(); }
+      else if (k === 'me') { setNav('me'); renderMe(); $('#meDrawer').hidden = false; }
+    };
+  });
 }
 
 /* ============ 13. 引导 ============ */

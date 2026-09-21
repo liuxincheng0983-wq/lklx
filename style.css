@@ -946,3 +946,66 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
 .sbar .sdist .d small{font-size:11px;font-weight:800;margin-left:1px}
 .sbar .sdist .l{font-size:10px;color:#B98BA0;font-weight:700;margin-top:1px}
 .sbar.empty .sname{color:#8A6070}
+
+/* ---------- 通用对话框（替代原生 alert/confirm/prompt） ---------- */
+.umask{position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;
+  background:rgba(60,20,38,.42);backdrop-filter:blur(3px);padding:0 26px;animation:umIn .18s ease}
+@keyframes umIn{from{opacity:0}to{opacity:1}}
+.ucard{width:100%;max-width:360px;background:#fff;border-radius:24px;padding:20px 18px 16px;
+  box-shadow:0 30px 60px -20px rgba(214,54,114,.55);animation:ucIn .22s cubic-bezier(.2,.9,.3,1.2)}
+@keyframes ucIn{from{transform:translateY(14px) scale(.96);opacity:0}to{transform:none;opacity:1}}
+[data-theme="night"] .ucard{background:#3A1830;box-shadow:0 30px 60px -18px rgba(0,0,0,.7)}
+.ut{font-size:16.5px;font-weight:900;color:#43222F;margin-bottom:8px;line-height:1.4;white-space:pre-wrap}
+[data-theme="night"] .ut{color:#F7DCEA}
+.ub{font-size:13px;color:#8A6070;margin:2px 0 10px;line-height:1.5;white-space:pre-wrap}
+.uf{margin:10px 0}
+.uf label{display:block;font-size:12px;font-weight:800;color:#B98BA0;margin-bottom:5px}
+.ui{width:100%;box-sizing:border-box;padding:12px 14px;border-radius:14px;border:1.6px solid var(--line);
+  background:var(--p50);font-size:15px;color:inherit;outline:none;-webkit-appearance:none}
+.ui:focus{border-color:var(--p500)}
+.ui.ta{min-height:96px;resize:vertical;font-family:inherit}
+[data-theme="night"] .ui{background:rgba(255,255,255,.06);color:#F7DCEA}
+.ubtns{display:flex;gap:9px;justify-content:flex-end;margin-top:16px}
+.ubtn{padding:10px 20px;border-radius:14px;border:none;font-size:14.5px;font-weight:800;
+  background:linear-gradient(135deg,var(--p500),var(--p700));color:#fff;cursor:pointer}
+.ubtn:active{transform:scale(.96)}
+.ubtn.ghost{background:var(--p50);color:var(--p600);border:1.6px solid var(--line)}
+
+/* ---------- 地图上的距离气泡 ---------- */
+.distbub{padding:5px 11px;border-radius:999px;background:#fff;color:#E2397A;font-size:14px;font-weight:900;
+  box-shadow:0 8px 20px -8px rgba(214,54,114,.8);border:1.5px solid #FFD3E2;white-space:nowrap}
+.distbub small{font-size:10.5px;font-weight:800;margin-left:2px;color:#E86BA0}
+
+/* ---------- 她那边：地址 + 天气 ---------- */
+.peerwhere{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-2px 0 10px;
+  padding:8px 12px;border-radius:12px;background:linear-gradient(140deg,var(--p50),#fff);
+  font-size:12.5px;font-weight:700;color:#7A4A5C}
+[data-theme="night"] .peerwhere{background:rgba(255,255,255,.06);color:#F0CCDE}
+.peerwhere .pw{flex:none;padding:2px 9px;border-radius:999px;background:#fff;color:#E86BA0;
+  font-weight:800;box-shadow:0 3px 8px -3px rgba(214,54,114,.4)}
+
+/* ---------- 今日到过的地方 ---------- */
+.visitlist{display:flex;flex-direction:column;gap:8px}
+.vrow{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:14px;
+  background:linear-gradient(140deg,var(--p50),#fff);font-size:13px}
+[data-theme="night"] .vrow{background:rgba(255,255,255,.06)}
+.vdot{flex:none;width:9px;height:9px;border-radius:50%;background:linear-gradient(135deg,var(--p500),var(--p700));
+  box-shadow:0 0 0 3px rgba(255,107,157,.18)}
+.vname{font-weight:800;color:#5A2A3C}
+[data-theme="night"] .vname{color:#F0CCDE}
+.vmeta{margin-left:auto;font-size:11px;color:#B98BA0;white-space:nowrap}
+
+/* ---------- 数字生活简报 ---------- */
+.lifeblock{margin-bottom:12px;padding:12px 13px;border-radius:16px;background:linear-gradient(140deg,var(--p50),#fff)}
+[data-theme="night"] .lifeblock{background:rgba(255,255,255,.06)}
+.lifeblock:last-child{margin-bottom:0}
+.lb-head{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:900;color:#5A2A3C;margin-bottom:10px}
+[data-theme="night"] .lb-head{color:#F0CCDE}
+.lb-head span{margin-left:auto;font-size:11px;font-weight:700;color:#B98BA0}
+.lb-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.lb{text-align:center;padding:8px 4px;border-radius:12px;background:rgba(255,255,255,.75)}
+[data-theme="night"] .lb{background:rgba(255,255,255,.05)}
+.lb b{display:block;font-size:15px;font-weight:900;color:var(--p600);letter-spacing:-.3px}
+.lb small{display:block;font-size:10.5px;font-weight:700;color:#B98BA0;margin-top:3px}
+.lb-note{font-size:12px;color:#8A6070;line-height:1.6}
+[data-theme="night"] .lb-note{color:#D3A6BD}

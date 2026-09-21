@@ -426,13 +426,14 @@
     }
   }
   function restoreChat() {
-    var txt = prompt('把备份里的 JSON 粘进来：');
-    if (!txt) return;
-    try {
-      var d = JSON.parse(txt);
-      H.importChat(d);
-      toast('聊天记录已恢复', true);
-    } catch (e) { toast('这份备份看不懂'); }
+    uiPrompt('把备份里的 JSON 粘进来：', '', function (txt) {
+      if (!txt) return;
+      try {
+        var d = JSON.parse(txt);
+        H.importChat(d);
+        toast('聊天记录已恢复', true);
+      } catch (e) { toast('这份备份看不懂'); }
+    }, 'textarea');
   }
   var THEMES = {
     pink:   { n: '小猫粉', a: '#FF6B9D', b: '#F24E86' },
@@ -543,9 +544,10 @@
     });
   }
   function askSince() {
-    var v = prompt('恋爱纪念日（格式 2024-05-20）', D.since || dayKey());
-    if (!v) return;
-    D.since = v.trim(); save(); send('since', { since: D.since }); renderHome(); render();
+    uiAskDate('恋爱纪念日 / 见面日', D.since || dayKey(), function (v) {
+      if (!v) return;
+      D.since = v; save(); send('since', { since: D.since }); renderHome(); render();
+    });
   }
 
   /* ---------------- 界面 ---------------- */
@@ -837,9 +839,10 @@
     if (back) back.onclick = close;
     var b1 = document.getElementById('btnLove'); if (b1) b1.onclick = checkin;
     var b2 = document.getElementById('btnSince'); if (b2) b2.onclick = function () {
-      var v = prompt('恋爱纪念日（格式 2024-05-20）', D.since || dayKey());
-      if (!v) return;
-      D.since = v.trim(); save(); send('since', { since: D.since }); render();
+      uiAskDate('恋爱纪念日 / 见面日', D.since || dayKey(), function (v) {
+        if (!v) return;
+        D.since = v; save(); send('since', { since: D.since }); render();
+      });
     };
     el.querySelectorAll('[data-greet]').forEach(function (b) { b.onclick = function () { greet(b.dataset.greet); }; });
     el.querySelectorAll('[data-mood]').forEach(function (b) { b.onclick = function () {
@@ -847,13 +850,14 @@
       addMood(b.dataset.mood, t ? t.value.trim() : '');
     }; });
     var b3 = document.getElementById('btnAddPhoto'); if (b3) b3.onclick = function () {
-      pickPhoto(function (d) { var cap = prompt('写句说明？（可留空）', ''); addPhoto(d, cap || ''); });
+      pickPhoto(function (d) { uiPrompt('写句说明？（可留空）', '', function (cap) { addPhoto(d, cap || ''); }); });
     };
     el.querySelectorAll('[data-photo]').forEach(function (c) { c.onclick = function () {
       var p = D.photos.filter(function (x) { return x.id === c.dataset.photo; })[0]; if (!p) return;
-      if (confirm('保存这张照片到手机？')) {
+      uiConfirm('保存这张照片到手机？', function (ok) {
+        if (!ok) return;
         var a = document.createElement('a'); a.href = p.data; a.download = '两颗心-' + dayKey(p.t) + '.jpg'; a.click();
-      }
+      });
     }; });
     el.querySelectorAll('[data-li]').forEach(function (b) { b.onclick = function () { toggleListItem(b.dataset.li); }; });
     el.querySelectorAll('[data-rec]').forEach(function (b) { b.onclick = function () { openRec(b.dataset.rec); }; });

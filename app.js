@@ -143,6 +143,10 @@ let myMarkSig = '', peerMarkSig = '';
 let watchId = null, pubTimer = null, pubFail = 0, es = null, lastPub = 0;
 const seenIds = new Set();
 const chat = [];
+let distBubble = null, distLine = null;   // 两人之间的「距离气泡」和连线
+let peerAddress = '';    // 她所在位置的地址（反地理编码）
+let peerWeather = null;  // 她那边的天气 {temp, code}
+let peerAddrSig = '', peerWeatherSig = '', lastWeather = 0;
 
 function load(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 
@@ -201,6 +205,69 @@ function hhmm(t) {
   const d = new Date(t || Date.now());
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
 }
+
+/* ============ 通用对话框 ============
+   App 的 WebView 没有实现 onJsPrompt/onJsConfirm/onJsAlert ——
+   原生 alert() 弹不出来、confirm() 永远返回 false、prompt() 永远返回 null。
+   所以自己画一个浮层，替代所有原生对话框。 */
+function uiDialog(cfg) {
+  return new Promise(res => {
+    const old = document.getElementById('uiModal'); if (old) old.remove();
+    const m = document.createElement('div');
+    m.id = 'uiModal'; m.className = 'umask';
+    let fields = '';
+    (cfg.fields || []).forEach(f => {
+      const t = f.type || 'text';
+      if (t === 'date') fields += `<div class="uf"><label>${esc(f.label || '')}</label><input class="ui" type="date" value="${esc(f.value || '')}"></div>`;
+      else if (t === 'time') fields += `<div class="uf"><label>${esc(f.label || '')}</label><input class="ui" type="time" value="${esc(f.value || '')}"></div>`;
+      else if (t === 'number') fields += `<div class="uf"><label>${esc(f.label || '')}</label><input class="ui" type="number" min="${f.min ?? ''}" max="${f.max ?? ''}" value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}"></div>`;
+      else if (t === 'textarea') fields += `<div class="uf"><label>${esc(f.label || '')}</label><textarea class="ui ta" placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea></div>`;
+      else fields += `<div class="uf"><label>${esc(f.label || '')}</label><input class="ui" type="text" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}"></div>`;
+    });
+    m.innerHTML = `<div class="ucard">
+      <div class="ut">${cfg.title ? esc(cfg.title) : ''}</div>
+      ${cfg.body ? `<div class="ub">${cfg.body}</div>` : ''}
+      ${fields}
+      <div class="ubtns">
+        ${cfg.cancelText !== null ? `<button class="ubtn ghost" data-a="c">${esc(cfg.cancelText || '取消')}</button>` : ''}
+        <button class="ubtn" data-a="o">${esc(cfg.okText || '确定')}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(m);
+    const done = val => { m.remove(); res(val); };
+    m.addEventListener('click', e => { if (e.target === m) done(null); });
+    const c = m.querySelector('[data-a="c"]'); if (c) c.onclick = () => done(null);
+    m.querySelector('[data-a="o"]').onclick = () => {
+      const inputs = [...m.querySelectorAll('input.ui,textarea.ui')];
+      if (inputs.length) {
+        const vals = {};
+        (cfg.fields || []).forEach((f, i) => { vals[f.key] = inputs[i].value.trim(); });
+        done(vals);
+      } else done(true);
+    };
+    const first = m.querySelector('input.ui,textarea.ui');
+    if (first) {
+      try { first.focus(); } catch (e) {}
+      m.addEventListener('keydown', ev => { if (ev.key === 'Enter') m.querySelector('[data-a="o"]').click(); });
+    }
+  });
+}
+function uiAlert(msg, cb) { uiDialog({ title: msg, cancelText: null }).then(() => cb && cb()); }
+function uiConfirm(msg, cb) { uiDialog({ title: msg, okText: '确定', cancelText: '取消' }).then(v => cb && cb(!!v)); }
+function uiPrompt(title, value, cb, type, placeholder, extra) {
+  uiDialog(Object.assign({ title, fields: [{ key: 'v', label: '', type: type || 'text', value: value || '', placeholder: placeholder || '' }] }, extra || {}))
+    .then(v => cb && cb(v ? v.v : null));
+}
+function uiAskDate(title, value, cb) {
+  uiDialog({ title, fields: [{ key: 'v', label: '', type: 'date', value: value || '' }] })
+    .then(v => cb && cb(v ? v.v : null));
+}
+/* 给 daily.js 用（它先于 app.js 加载，且两者都在各自 IIFE 里） */
+window.uiDialog = uiDialog;
+window.uiAlert = uiAlert;
+window.uiConfirm = uiConfirm;
+window.uiPrompt = uiPrompt;
+window.uiAskDate = uiAskDate;
 function randRoom() {
   const A = 'abcdefghjkmnpqrstuvwxyz23456789';
   let s = '';
@@ -365,6 +432,30 @@ function upsertPeer(p, animate) {
 }
 
 /* ============ 7. 发布 / 订阅 ============ */
+/* 两人之间的「距离气泡」+ 连线：地图上像即时通讯一样直观 */
+let distBubbleSig = '';
+function drawDistBubble() {
+  if (!amap) return;
+  const m = haversine(me, peer);
+  const sig = (me && peer) ? [me.lat.toFixed(5), me.lng.toFixed(5), peer.lat.toFixed(5), peer.lng.toFixed(5), Math.round(m / 100) * 100].join('|') : 'none';
+  if (sig === distBubbleSig) return;
+  distBubbleSig = sig;
+  try { if (distBubble) { amap.remove(distBubble); distBubble = null; } } catch (e) {}
+  try { if (distLine) { amap.remove(distLine); distLine = null; } } catch (e) {}
+  if (!me || !peer || m == null) return;
+  const [dv, du] = fmtDist(m);
+  distLine = new AMap.Polyline({
+    path: [[me.lng, me.lat], [peer.lng, peer.lat]],
+    strokeColor: '#FF6B9D', strokeWeight: 3, strokeStyle: 'dashed',
+    strokeOpacity: 0.75, zIndex: 40, borderWeight: 0, lineJoin: 'round'
+  });
+  amap.add(distLine);
+  distBubble = new AMap.Marker({
+    position: [(me.lng + peer.lng) / 2, (me.lat + peer.lat) / 2],
+    content: `<div class="distbub">${dv}<small>${du}</small></div>`,
+    offset: new AMap.Pixel(-30, -17), zIndex: 1200, map: amap, clickable: false
+  });
+}
 async function publish(obj) {
   if (!S.room) return;
   const plain = JSON.stringify(obj);
@@ -443,6 +534,7 @@ async function onRaw(message) {
   else if (o.k === 'rep') onPeerReport(o);
   else if (o.k === 'focus') onFocusAsk(o);
   else if (o.k === 'focusOk') onFocusOk(o);
+  else if (o.k === 'life') onPeerLife(o);
   else if (o.k === 'd' && window.Daily) window.Daily.onMsg(o);
 }
 /* 对方到某地/离开某地的自动报备 */
@@ -476,6 +568,88 @@ function onFocusOk(o) {
   showNote('✅ ' + nm + '答应了专注时刻', '这 ' + (o.min || 30) + ' 分钟里她不会被打扰', 'ok');
   chat.push({ me: false, text: '✅ 同意专注 ' + (o.min || 30) + ' 分钟', t: Date.now() });
   renderChat();
+}
+
+/* ============ 数字生活简报（步数 / 屏幕使用） ============ */
+let myLife = null, peerLife = null, lastLifePub = 0, lifeTickAt = 0;
+function onPeerLife(o) {
+  peerLife = {
+    step: o.step || 0, kcal: o.kcal || 0, usageMs: o.usageMs || 0,
+    unlocks: o.unlocks || 0, firstUnlock: o.firstUnlock || 0,
+    longest: o.longest || 0, contMin: o.contMin || 0, at: Date.now()
+  };
+  fillLifeCard();
+}
+function lifeNative() {
+  if (!hasNative() || typeof LKLX.life !== 'function') return null;
+  try { return JSON.parse(LKLX.life() || 'null'); } catch (e) { return null; }
+}
+/* 前台时每 30 秒读一次本机数据，每 10 分钟给对端发一次摘要 */
+function lifeTick() {
+  const now = Date.now();
+  if (now - lifeTickAt < 30000) return;
+  lifeTickAt = now;
+  const d = lifeNative();
+  if (d) { myLife = d; fillLifeCard(); }
+  if (myLife && (myLife.contMin >= 1 || myLife.step > 0 || myLife.usageMs > 0)) {
+    if (now - lastLifePub >= 600000 && S.room && !S.demo) {
+      lastLifePub = now;
+      publish({
+        v: 1, k: 'life', id: myId(), n: S.name || '我', t: now,
+        step: myLife.step || 0, kcal: myLife.kcal || 0, usageMs: myLife.usageMs || 0,
+        unlocks: myLife.unlocks || 0, firstUnlock: myLife.firstUnlock || 0,
+        longest: myLife.longest || 0, contMin: myLife.contMin || 0
+      });
+    }
+  }
+}
+function fmtDur(ms) {
+  if (ms == null) return '—';
+  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+  return h > 0 ? h + ' 小时 ' + m + ' 分' : m + ' 分钟';
+}
+function lifeBlock(who, L) {
+  if (!L) return `<div class="lifeblock"><div class="lb-head">${who}<span>还没收到数据</span></div>
+    <div class="lb-note">等对方打开 App、允许「使用情况访问」后，这里就会出现 TA 今天的手机报告。</div></div>`;
+  const parts = [
+    ['🕒 使用', fmtDur(L.usageMs)],
+    ['🔓 解锁', L.unlocks + ' 次'],
+    ['👣 步数', L.step ? L.step.toLocaleString() : '0'],
+    ['🔥 千卡', (L.kcal || 0) + ' kcal']
+  ];
+  const extra = [];
+  if (L.longest) extra.push('最长一次 ' + fmtDur(L.longest));
+  if (L.contMin >= 3) extra.push('已连续用 ' + L.contMin + ' 分钟');
+  return `<div class="lifeblock"><div class="lb-head">${who}<span>${extra.join(' · ') || '今天'}</span></div>
+    <div class="lb-grid">${parts.map(p => `<div class="lb"><b>${p[1]}</b><small>${p[0]}</small></div>`).join('')}</div></div>`;
+}
+function renderLifeInner() {
+  const native = hasNative();
+  let body = '';
+  if (native) {
+    body += lifeBlock('我', myLife);
+    body += lifeBlock(peer && peer.n ? peer.n : '她', peerLife);
+    if (myLife && !myLife.usageGranted) {
+      body += `<div class="lb-note" style="margin-top:10px">想看到「使用时长 / 解锁次数」，需要在系统里允许「两颗心」的使用情况访问。
+        <button class="btn sm ghost" id="btnUsage" style="margin-top:8px">去开启使用情况访问</button>
+        <button class="btn sm line" id="btnLifeAsk" style="margin-top:8px">允许读取步数</button></div>`;
+    }
+  } else {
+    body = `<div class="lb-note">手机使用时长、解锁次数、步数这些数据只有<b>安卓版 App</b>能读（需要系统级权限）。
+      <br>网页版先看「今日到过的地方」和距离就行啦。</div>`;
+  }
+  return `<div class="card">
+    <h4>${Kitty.glyph('bell', 13)} 数字生活简报</h4>${body}</div>`;
+}
+/* 只刷新 lifeCard 这一个节点，不重建整个足迹面板（保住滚动位置） */
+function fillLifeCard() {
+  const el = document.getElementById('lifeCard');
+  if (!el) return;
+  el.innerHTML = renderLifeInner();
+  const u = el.querySelector('#btnUsage');
+  if (u) u.onclick = () => { try { LKLX.openUsage(); } catch (e) {} };
+  const a = el.querySelector('#btnLifeAsk');
+  if (a) a.onclick = () => { try { LKLX.lifeAsk(); } catch (e) {} toast('去系统里点「允许」即可'); };
 }
 /* OwnTracks 报的是原始 GPS（WGS84）且不经加密，
    必须转成 GCJ-02 才能跟高德地图的底图对上。 */
@@ -515,7 +689,66 @@ function onPeerPos(o) {
     }
     upsertPeer(peer, true);
     renderPeer();
+    updatePeerAddress();
+    updatePeerWeather();
   }
+}
+/* 「Ta在哪儿」—— 反地理编码出地址（移动超过 ~100 米才刷新）
+   高德的反查在域名白名单之外会静默失败（比如本地预览），所以留一个 6 秒兜底：
+   拿不到地名就直接显示经纬度，绝不空着。 */
+function updatePeerAddress() {
+  if (!amap || !peer || !window.AMap) return;
+  const sig = peer.lat.toFixed(3) + ',' + peer.lng.toFixed(3);
+  if (sig === peerAddrSig) return;
+  peerAddrSig = sig;
+  const la = peer.lat, lo = peer.lng;
+  peerAddress = '';
+  setTimeout(() => {
+    if (!peerAddress && peerAddrSig === sig) {
+      peerAddress = la.toFixed(4) + ', ' + lo.toFixed(4);
+      renderPeer();
+    }
+  }, 6000);
+  try {
+    AMap.plugin('AMap.Geocoder', () => {
+      try {
+        const geo = new AMap.Geocoder({});
+        geo.getAddress([lo, la], (status, result) => {
+          if (peerAddrSig !== sig) return;
+          if (status === 'complete' && result && result.regeocode) {
+            const rc = result.regeocode;
+            const a = rc.formattedAddress || '';
+            const poi = rc.pois && rc.pois[0];
+            const out = (poi && poi.name) || (a ? a.split(',').slice(0, 3).join(' ') : '');
+            if (out) { peerAddress = out; renderPeer(); }
+          }
+        });
+      } catch (e) {}
+    });
+  } catch (e) {}
+}
+/* 她那边的天气 —— Open-Meteo 免密钥，30 分钟刷一次 */
+function updatePeerWeather() {
+  if (!peer || peerWeatherSig === peer.lat.toFixed(2) + ',' + peer.lng.toFixed(2)) return;
+  const now = Date.now();
+  if (now - lastWeather < 1800000) return;
+  lastWeather = now;
+  peerWeatherSig = peer.lat.toFixed(2) + ',' + peer.lng.toFixed(2);
+  fetch(`https://api.open-meteo.com/v1/forecast?latitude=${peer.lat}&longitude=${peer.lng}&current=temperature_2m,weather_code&timezone=auto`)
+    .then(r => r.json())
+    .then(j => {
+      if (j && j.current && typeof j.current.temperature_2m === 'number') {
+        peerWeather = { temp: Math.round(j.current.temperature_2m), code: j.current.weather_code || 0 };
+        renderPeer();
+      }
+    })
+    .catch(() => {});
+}
+function weatherIcon(code) {
+  const c = +code || 0;
+  if (c === 0) return '☀️'; if (c <= 2) return '🌤'; if (c === 3) return '☁️';
+  if (c <= 48) return '🌫'; if (c <= 67) return '🌧'; if (c <= 77) return '❄️';
+  if (c <= 82) return '🌦'; if (c <= 86) return '🌨'; return '⛈';
 }
 function onPeerMsg(o) {
   chat.push({ me: false, text: o.msg, t: o.t || Date.now() });
@@ -629,8 +862,8 @@ function copyUrl(tip) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(u)
       .then(() => toast(tip || '网址已复制', true))
-      .catch(() => prompt('复制这个网址：', u));
-  } else prompt('复制这个网址：', u);
+      .catch(() => uiPrompt('复制这个网址：', u, null, 'text', null));
+  } else uiPrompt('复制这个网址：', u, null, 'text', null);
 }
 function geoBarHide() { const el = $('#geoBar'); if (el) el.hidden = true; }
 
@@ -917,6 +1150,8 @@ function startDemo() {
     acc: 18, speed: 1.2, batt: 76, chg: false, at: Date.now(), t: Date.now()
   };
   upsertPeer(peer, true);
+  updatePeerAddress();
+  updatePeerWeather();
   if (me) map.fitBounds([[me.lat, me.lng], [peer.lat, peer.lng]], { padding: [70, 150] });
   clearInterval(demoTimer);
   demoTimer = setInterval(() => {
@@ -980,10 +1215,11 @@ function renderPeer() {
   /* 面板内容一秒一刷会把滚动位置和开关状态冲掉，
      所以只在内容真的变了（按分钟）时才重建，并保住滚动位置。 */
   const sig = [peer.lat, peer.lng, peer.at - (peer.at % 60000), peer.batt, peer.chg,
-    peer.speed, peer.acc, focusLeft(),
+    peer.speed, peer.acc, focusLeft(), peerAddress, peerWeather ? peerWeather.temp + ':' + peerWeather.code : '',
     (S.places || []).map(p => p.id + p.on + (p.in ? 1 : 0)).join()]
     .join('|');
   renderHomeStatus();
+  drawDistBubble();
   if (sig !== peerPanelSig) {
     peerPanelSig = sig;
     const box = $('#panels');
@@ -1009,6 +1245,10 @@ function renderPeerPanel(m) {
   $p.innerHTML = `
   <div class="card">
     <h4>${Kitty.heart('#FF6B9D', 13)} 她现在</h4>
+    ${(peerAddress || peerWeather) ? `<div class="peerwhere">
+      <span>📍 ${esc(peerAddress || '正在定位…')}</span>
+      ${peerWeather ? `<span class="pw">${weatherIcon(peerWeather.code)} ${peerWeather.temp}°C</span>` : ''}
+    </div>` : ''}
     <div class="row"><div class="ic">${Kitty.glyph('battery', 16)}</div>
       <div class="k">手机电量<em>${peer.chg ? '正在充电' : '没在充电'}</em></div>
       <div class="v">${esc(b == null ? '未知' : b + '%')}</div></div>
@@ -1070,18 +1310,21 @@ function renderPeerPanel(m) {
     nearWatch = { target: km * 1000, fired: false };
   };
   $('#btnFocus').onclick = () => {
-    const v = prompt('想安静多久？（分钟，5-180）', '30');
-    if (v == null) return;
-    const min = Math.max(5, Math.min(180, parseInt(v, 10) || 30));
-    requestFocus(min);
+    uiPrompt('想安静多久？（分钟，5-180）', '30', v => {
+      if (v == null) return;
+      const min = Math.max(5, Math.min(180, parseInt(v, 10) || 30));
+      requestFocus(min);
+    }, 'number');
   };
   $('#btnPoke2').onclick = () => sendPoke('想你啦 💕', true);
   $('#btnSos').onclick = () => {
-    if (!confirm('确定向对方发送 SOS 求助吗？')) return;
-    publish({ v: 1, k: 'sos', id: myId(), n: S.name || '我', t: Date.now() });
-    heartsBurst(10);
-    if (me) publish({ v: 1, k: 'pos', id: myId(), n: S.name || '我', av: S.avatar, lat: +me.lat.toFixed(6), lon: +me.lng.toFixed(6), t: Date.now() });
-    toast('求助已发出', false);
+    uiConfirm('确定向对方发送 SOS 求助吗？', ok => {
+      if (!ok) return;
+      publish({ v: 1, k: 'sos', id: myId(), n: S.name || '我', t: Date.now() });
+      heartsBurst(10);
+      if (me) publish({ v: 1, k: 'pos', id: myId(), n: S.name || '我', av: S.avatar, lat: +me.lat.toFixed(6), lon: +me.lng.toFixed(6), t: Date.now() });
+      toast('求助已发出', false);
+    });
   };
 }
 let nearWatch = null;
@@ -1090,12 +1333,14 @@ function renderTrailPanel() {
   const pts = peerHistory;
   const $t = $('#panelTrail');
   if (!pts.length) {
-    $t.innerHTML = `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
+    $t.innerHTML = `<div id="lifeCard"></div>` + `<div class="empty">${Kitty.heart('#FFD3E2', 40)}
       <div>还没有足迹</div>
       <div style="font-size:11.5px;margin-top:6px">双方都开着页面时，会记下走过的地方</div></div>`;
+    fillLifeCard();
     return;
   }
   const st = trailStats(pts);
+  const visits = todayVisits(pts);
   const statCard = st ? `
   <div class="card">
     <h4>${Kitty.heart('#FF6B9D', 13)} 这段日子</h4>
@@ -1110,8 +1355,13 @@ function renderTrailPanel() {
       <span class="tag">最近 ${hhmm(st.last)}</span>
     </div>
   </div>` : '';
+  const visitCard = visits.length ? `
+  <div class="card">
+    <h4>${Kitty.glyph('gps', 13)} 今日到过 <b>${visits.length}</b> 个地方</h4>
+    <div class="visitlist">${visits.map((v, i) => visitRow(v, i)).join('')}</div>
+  </div>` : '';
   const recent = pts.slice(-14).reverse();
-  $t.innerHTML = statCard + `
+  $t.innerHTML = `<div id="lifeCard"></div>` + statCard + visitCard + `
   <div class="card">
     <h4>${Kitty.heart('#FF6B9D', 13)} 足迹记录</h4>
     <div class="sw"><div class="k">记录足迹<em>共 ${pts.length} 个点</em></div>
@@ -1132,9 +1382,41 @@ function renderTrailPanel() {
     if (pts.length > 1) map.fitBounds(pts.map(p => [p.lat, p.lng]), { padding: [60, 90] });
   };
   $('#btnClearTrail').onclick = () => {
-    if (!confirm('清除对方的历史足迹？')) return;
-    peerHistory = []; localStorage.removeItem('lklx.trail'); drawTrail(); renderTrailPanel(); toast('足迹已清除');
+    uiConfirm('清除对方的历史足迹？', ok => {
+      if (!ok) return;
+      peerHistory = []; localStorage.removeItem('lklx.trail'); drawTrail(); renderTrailPanel(); toast('足迹已清除');
+    });
   };
+  visits.forEach((v, i) => geocodeVisit(v, i));
+  fillLifeCard();
+}
+function visitRow(v, i) {
+  return `<div class="vrow" id="vrow-${i}">
+    <span class="vdot"></span>
+    <span class="vname">停留点 ${i + 1}</span>
+    <span class="vmeta">${hhmm(v.t0)} 到 · 停留 ${v.dwell >= 60 ? Math.round(v.dwell / 6) / 10 + ' 小时' : v.dwell + ' 分钟'}</span>
+  </div>`;
+}
+function geocodeVisit(v, i) {
+  if (!amap || !window.AMap) return;
+  try {
+    AMap.plugin('AMap.Geocoder', () => {
+      try {
+        const g = new AMap.Geocoder({ radius: 300, extensions: 'base' });
+        g.getAddress([v.lng, v.lat], (st, res) => {
+          if (st !== 'complete' || !res || !res.regeocode) return;
+          const c = res.regeocode.addressComponent || {};
+          const poi = res.regeocode.pois && res.regeocode.pois[0];
+          const name = (poi && poi.name) || c.building || c.streetNumber || c.district || '停留点 ' + (i + 1);
+          const el = document.getElementById('vrow-' + i);
+          if (el) {
+            const n = el.querySelector('.vname');
+            if (n) n.textContent = name;
+          }
+        });
+      } catch (e) {}
+    });
+  } catch (e) {}
 }
 
 function renderChat() {
@@ -1339,7 +1621,7 @@ function renderMe() {
     if (!S.room) return toast('先设置一个暗号');
     const txt = `💕 两颗心 · 实时定位\n打开：${location.href}\n暗号：${S.room}\n（把这个发给女朋友）`;
     try { await navigator.clipboard.writeText(txt); toast('已复制，直接粘贴发给她即可', true); }
-    catch (e) { prompt('复制下面的内容发给她：', txt); }
+    catch (e) { uiPrompt('复制下面的内容发给她：', txt, null, 'textarea'); }
   };
   $('#swEnc').onchange = e => { S.encrypt = e.target.checked; save(); toast(S.encrypt ? '已开启加密' : '已关闭加密（不推荐）'); };
   $('#inInt').oninput = e => { S.interval = +e.target.value;
@@ -1362,7 +1644,7 @@ function renderMe() {
     if (!S.room) return toast('先设置暗号');
     const u = relayBase() + '/' + topicOf(S.room);
     try { await navigator.clipboard.writeText(u); toast('已复制，粘到 OwnTracks 的地址栏', true); }
-    catch (e) { prompt('复制下面这行：', u); }
+    catch (e) { uiPrompt('复制下面这行：', u, null, 'text'); }
   };
   $('#swTheme').onchange = e => { S.theme = e.target.checked ? 'night' : 'day'; save(); applyTheme(); };
   $('#swSat').onchange = e => { S.layer = e.target.checked ? 'sat' : 'std'; save(); applyLayer(); };
@@ -1374,7 +1656,7 @@ function renderMe() {
     chips.querySelectorAll('.mchip').forEach(c => c.classList.toggle('on', c === b));
   });
   $('#btnDemo').onclick = () => { if (S.demo) stopDemo(); else startDemo(); renderMe(); };
-  $('#btnReset').onclick = () => { if (confirm('重新走一遍引导？')) { openWelcome(); } };
+  $('#btnReset').onclick = () => { uiConfirm('重新走一遍引导？', ok => { if (ok) openWelcome(); }); };
   $('#btnGoDaily').onclick = () => { $('#meDrawer').hidden = true; if (window.Daily) window.Daily.open(); };
   $('#btnGoPlaces').onclick = () => {
     $('#meDrawer').hidden = true;
@@ -1690,15 +1972,17 @@ function renderPlaces() {
   const a1 = box.querySelector('#btnAddHere'), a2 = box.querySelector('#btnAddMine');
   if (a1) a1.onclick = () => {
     if (!peer) { toast('还没收到她的位置'); return; }
-    const n = prompt('给她这个位置起个名字', '家');
-    if (n) addPlace(n.trim().slice(0, 8), peer);
+    uiPrompt('给她这个位置起个名字', '家', n => {
+      if (n) addPlace(n.trim().slice(0, 8), peer);
+    });
   };
   if (a2) a2.onclick = () => {
     if (!me) { toast('还没有我的位置'); return; }
-    const n = prompt('这个地方叫什么', '公司');
-    if (!n) return;
-    addPlace(n.trim().slice(0, 8), me);
-    publish({ v: 1, k: 'rep', id: myId(), n: S.name || '我', place: n.trim().slice(0, 8), enter: true, t: Date.now() });
+    uiPrompt('这个地方叫什么', '公司', n => {
+      if (!n) return;
+      addPlace(n.trim().slice(0, 8), me);
+      publish({ v: 1, k: 'rep', id: myId(), n: S.name || '我', place: n.trim().slice(0, 8), enter: true, t: Date.now() });
+    });
   };
 }
 
@@ -1748,6 +2032,31 @@ function trailStats(list) {
     first: sorted[0].t,
     last: sorted[sorted.length - 1].t
   };
+}
+
+/* 今日到过的地方：把今天的轨迹点按 250 米聚成「停留」，得出到访时间和停留时长 */
+function todayVisits(list) {
+  const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+  const t0 = day0.getTime();
+  const pts = (list || []).filter(p => p && p.t && p.t >= t0).sort((a, b) => a.t - b.t);
+  const R = 250;
+  const clusters = [];
+  let cur = null;
+  for (const p of pts) {
+    if (!cur) { cur = { lat: p.lat, lng: p.lng, t0: p.t, t1: p.t, n: 1 }; clusters.push(cur); continue; }
+    const d = haversine({ lat: cur.lat, lng: cur.lng }, { lat: p.lat, lng: p.lng });
+    if (d != null && d <= R) {
+      cur.t1 = p.t; cur.n++;
+      cur.lat = (cur.lat * (cur.n - 1) + p.lat) / cur.n;
+      cur.lng = (cur.lng * (cur.n - 1) + p.lng) / cur.n;
+    } else {
+      cur = { lat: p.lat, lng: p.lng, t0: p.t, t1: p.t, n: 1 };
+      clusters.push(cur);
+    }
+  }
+  return clusters
+    .filter(c => (c.t1 - c.t0) >= 2 * 60000)
+    .map(c => ({ lat: c.lat, lng: c.lng, t0: c.t0, t1: c.t1, dwell: Math.round((c.t1 - c.t0) / 60000) }));
 }
 
 /* 右上角「我的」头像 */
@@ -1999,7 +2308,7 @@ function bindWelcome() {
     if (!room) { toast('先填一个暗号'); return; }
     const txt = `💕 两颗心 · 实时定位\n打开：${location.href}\n暗号：${room}`;
     try { await navigator.clipboard.writeText(txt); toast('已复制，发给她就好', true); }
-    catch (e) { prompt('复制下面内容发给她：', txt); }
+    catch (e) { uiPrompt('复制下面内容发给她：', txt, null, 'textarea'); }
   };
   $('#wvGo').onclick = () => finishWelcome();
 }
@@ -2105,6 +2414,7 @@ function tick() {
   if (peer) renderPeer();
   if (peer && !S.demo) { checkPlaces(); }
   if (peer) checkAlerts();
+  lifeTick();
   if (nearWatch && peer && me && !nearWatch.fired) {
     const d = haversine(me, peer);
     if (d != null && d <= nearWatch.target) {

@@ -983,6 +983,7 @@ function renderPeer() {
     peer.speed, peer.acc, focusLeft(),
     (S.places || []).map(p => p.id + p.on + (p.in ? 1 : 0)).join()]
     .join('|');
+  renderHomeStatus();
   if (sig !== peerPanelSig) {
     peerPanelSig = sig;
     const box = $('#panels');
@@ -1852,12 +1853,69 @@ function applyAccent(t) {
 
 
 
+
+/* 首页最上面的「她现在」——打开一眼就知道她在干嘛 */
+let homeStatSig = '';
+function renderHomeStatus(force) {
+  const el = document.getElementById('homeStatus');
+  if (!el) return;
+  const online = !!(peer && (Date.now() - peer.at < 45000));
+  const d = peer ? fmtDist(haversine(me, peer)) : null;
+  const idleMin = peer && peer.at ? Math.round((Date.now() - peer.at) / 60000) : null;
+  const sig = [peer ? peer.n : '', peer ? peer.at - (peer.at % 30000) : 0, peer ? peer.batt : '',
+    peer ? peer.chg : '', peer ? Math.round((peer.speed || 0) * 10) : '', online,
+    d ? d[0] + d[1] : '', me ? 1 : 0, S.room ? 1 : 0].join('|');
+  if (!force && sig === homeStatSig) return;
+  homeStatSig = sig;
+
+  if (!peer) {
+    el.innerHTML = `<div class="sbar empty" id="sbarTap">
+      <div class="sav"><div class="ring">${Kitty.face({ bow: '#FFC9DD', w: 40, h: 34 })}</div>
+        <span class="live idle"></span></div>
+      <div class="sinfo">
+        <div class="sname">${S.room ? '还没收到她的位置' : '还没设置房间暗号'}</div>
+        <div class="schips"><span class="schip">点这里去看地图 / 设暗号</span></div>
+      </div>
+      <div class="sdist"><div class="d">--</div><div class="l">距离</div></div>
+    </div>`;
+    const t = document.getElementById('sbarTap');
+    if (t) t.onclick = () => { showMap(); goSeg('Peer'); if (!S.room) openWelcome(); };
+    return;
+  }
+  const av = Kitty.avatarHTML(peer.av, 50);
+  const chips = [];
+  chips.push(`<span class="schip">🕒 ${esc(ago(peer.at))}</span>`);
+  if (peer.batt != null) {
+    chips.push(`<span class="schip${peer.batt <= 20 && !peer.chg ? ' warn' : ''}">🔋 ${peer.batt}%${peer.chg ? ' 充电中' : ''}</span>`);
+  }
+  if (peer.speed != null && peer.speed > 0.6) chips.push(`<span class="schip">🚶 ${(peer.speed * 3.6).toFixed(1)} km/h</span>`);
+  if (peer.ot) chips.push('<span class="schip warn">后台补点</span>');
+
+  el.innerHTML = `<div class="sbar" id="sbarTap">
+    <div class="sav"><div class="ring">${av}</div>
+      <span class="live ${online ? '' : 'idle'}"></span></div>
+    <div class="sinfo">
+      <div class="sname">${esc(peer.n || '宝贝')}
+        <span class="st ${online ? '' : 'off'}">${online ? '在线' : (idleMin != null && idleMin > 30 ? '很久没更新' : '可能没在看手机')}</span>
+      </div>
+      <div class="schips">${chips.join('')}</div>
+    </div>
+    <div class="sdist">
+      <div class="d">${d[0]}${d[1] ? '<small>' + d[1] + '</small>' : ''}</div>
+      <div class="l">距离你</div>
+    </div>
+  </div>`;
+  const t = document.getElementById('sbarTap');
+  if (t) t.onclick = () => { showMap(); goSeg('Peer'); };
+}
+
 /* ============ 12.7 首页 ⇄ 地图 ============ */
 function showHome() {
   const app = document.getElementById('app');
   if (app) app.classList.remove('mapmode');
   const h = $('#home'); if (h) h.hidden = false;
   if (window.Daily) { try { window.Daily.home(); } catch (e) {} }
+  renderHomeStatus(true);
 }
 function showMap() {
   const app = document.getElementById('app');

@@ -1227,3 +1227,24 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
   background:var(--mint)
 }
 .daychip.on.has::after{background:#fff}
+
+/* ---------- 分享配置面板（二维码） ---------- */
+.cfgcard{max-width:360px}
+.qrslot{display:grid;place-items:center;margin:6px 0 12px;padding:10px;border-radius:18px;
+  background:#fff;box-shadow:inset 0 0 0 1px rgba(255,107,157,.16)}
+[data-theme="night"] .qrslot{background:#fff}
+.qrslot canvas{display:block;border-radius:8px}
+.qrslot-err{font-size:12px;color:#C2461A;padding:20px 6px;text-align:center}
+.cfgbox{margin-bottom:12px;border-radius:16px;overflow:hidden;
+  background:var(--p50);border:1px solid rgba(255,255,255,.9)}
+[data-theme="night"] .cfgbox{background:rgba(255,255,255,.06);border-color:rgba(255,143,177,.16)}
+.cfgbox>div{display:flex;align-items:center;gap:10px;padding:9px 13px;font-size:13px;
+  border-bottom:1px solid rgba(255,107,157,.10)}
+.cfgbox>div:last-child{border-bottom:none}
+.cfgbox b{flex:none;width:46px;font-size:11.5px;font-weight:900;color:#B98BA0}
+.cfgbox span{flex:1;font-weight:700;color:#4A2436;word-break:break-all;font-size:12.5px}
+[data-theme="night"] .cfgbox span{color:#FFE9F2}
+.stepnote{font-size:12px;line-height:1.65;color:#8A6070;margin-bottom:14px}
+[data-theme="night"] .stepnote{color:#D3A6BD}
+.ubtns.col{flex-direction:column;gap:8px}
+.ubtns.col .ubtn{width:100%;padding:12px}

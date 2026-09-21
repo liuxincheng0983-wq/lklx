@@ -537,6 +537,7 @@ async function onRaw(message) {
   else if (o.k === 'focusOk') onFocusOk(o);
   else if (o.k === 'life') onPeerLife(o);
   else if (o.k === 'tl') onPeerTl(o);
+  else if (o.k === 'cfg') onPeerCfg(o);
   else if (o.k === 'd' && window.Daily) window.Daily.onMsg(o);
 }
 /* 对方到某地/离开某地的自动报备 */
@@ -1611,6 +1612,8 @@ function renderMe() {
       <button class="btn sm ghost" id="btnRelayTest">测试连接</button>
       <button class="btn sm" id="btnRelaySave">保存并重连</button>
     </div>
+    <button class="btn sm ghost" id="btnRelayShare" style="width:100%;margin-top:8px">
+      分享给她（二维码 / 一键发送）</button>
   </div>
 
   <div class="card">
@@ -1708,6 +1711,7 @@ function renderMe() {
     save(); connect(); toast(S.relay ? '已切到自建服务器，正在重连…' : '已切回公共 ntfy.sh');
     renderMe();
   };
+  $('#btnRelayShare').onclick = () => openCfgShare();
   $('#btnRelayTest').onclick = async () => {
     const raw = $('#inRelay').value.trim();
     const base = (raw || NTFY).replace(/\/+$/, '');
@@ -1908,7 +1912,7 @@ function showNote(title, body, kind, actions) {
   if (!el) return;
   el.className = 'notecard';
   el.innerHTML = '<div class="ntitle">' + esc(title) + '</div>'
-    + (body ? '<div class="nbody">' + esc(body) + '</div>' : '')
+    + (body ? '<div class="nbody">' + esc(body).replace(/\n/g, '<br>') + '</div>' : '')
     + (actions && actions.length ? '<div class="btngrid" style="margin-top:10px">'
         + actions.map((a, i) => `<button class="btn sm ${i ? 'ghost' : ''}" data-na="${i}">${esc(a.t)}</button>`).join('')
         + '</div>' : '');
@@ -2643,6 +2647,151 @@ function showTimeline() {
 }
 function hideTimeline() { const t = document.getElementById('timeline'); if (t) t.hidden = true; }
 
+/* ============================================================
+   服务器配置 · 二维码 + 一键分享
+   ------------------------------------------------------------
+   把「服务器地址 + 口令 + 房间暗号」打成一个包：
+     · 二维码：她用相机扫一下就自动填好（配置放在 # 后面，不会发给任何服务器）
+     · 一键发给她：走系统分享（微信/短信都行）
+     · 最省事的一条：你们已经在同一个房间里，直接把这包配置发过去，
+       她那边弹个「同意」就切过来了，一个字都不用打。
+   ============================================================ */
+function b64uEnc(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64uDec(s) {
+  s = String(s).replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function cfgPack() {
+  const p = { v: 1, r: S.room || '', s: S.relay || '', t: S.relayToken || '' };
+  return p;
+}
+function cfgLink() {
+  return location.href.split('#')[0] + '#c=' + b64uEnc(JSON.stringify(cfgPack()));
+}
+function cfgText() {
+  const srv = S.relay ? S.relay : '公共 ntfy.sh（每天 240 条）';
+  return '💕 两颗心 · 服务器配置\n'
+    + '服务器：' + srv + '\n'
+    + (S.relayToken ? '口令：' + S.relayToken + '\n' : '')
+    + '暗号：' + (S.room || '（还没设）') + '\n'
+    + '点开这个链接就自动填好，不用手打：\n' + cfgLink();
+}
+/* 打开分享面板：二维码 + 地址口令 + 三个按钮 */
+function openCfgShare() {
+  const old = document.getElementById('cfgShare');
+  if (old) old.remove();
+  const link = cfgLink();
+  const el = document.createElement('div');
+  el.id = 'cfgShare';
+  el.className = 'umask';
+  el.innerHTML = `<div class="ucard cfgcard">
+    <div class="ut">让她也连上这台服务器</div>
+    <div class="ub">配置放在二维码里，${S.relay ? '扫一下就自动填好' : '现在还是公共服务器，先在上面填好自建地址再分享'}</div>
+    <div class="qrslot"><canvas id="cfgQR"></canvas></div>
+    <div class="cfgbox">
+      <div><b>服务器</b><span>${esc(S.relay || '公共 ntfy.sh')}</span></div>
+      ${S.relayToken ? `<div><b>口令</b><span>${esc(S.relayToken)}</span></div>` : ''}
+      <div><b>暗号</b><span>${esc(S.room || '未设置')}</span></div>
+    </div>
+    <div class="stepnote">
+      ① 你们现在就在同一个房间里 —— 点「<b>直接发给她</b>」，她手机上会弹出提示，点同意就换过来了，一个字都不用打。<br>
+      ② 或者让她用相机扫上面的码 / 点你发过去的链接。
+    </div>
+    <div class="ubtns col">
+      <button class="ubtn" id="cfgSend">直接发给她（推荐）</button>
+      <button class="ubtn ghost" id="cfgSys">用微信等方式分享</button>
+      <button class="ubtn ghost" id="cfgCopy">复制配置</button>
+      <button class="ubtn ghost" id="cfgClose">关闭</button>
+    </div>
+  </div>`;
+  document.body.appendChild(el);
+  const close = () => el.remove();
+  el.addEventListener('click', e => { if (e.target === el) close(); });
+  el.querySelector('#cfgClose').onclick = close;
+  try { KittyQR.draw(el.querySelector('#cfgQR'), link, { size: 210, ec: 'M', margin: 3 }); }
+  catch (e) { el.querySelector('.qrslot').innerHTML = '<div class="qrslot-err">二维码生成失败：' + esc(e.message || e) + '</div>'; }
+  el.querySelector('#cfgCopy').onclick = async () => {
+    const txt = cfgText();
+    try { await navigator.clipboard.writeText(txt); toast('配置已复制，粘给她就行', true); close(); }
+    catch (e2) { uiPrompt('复制下面内容发给她：', txt, null, 'textarea'); }
+  };
+  el.querySelector('#cfgSys').onclick = () => {
+    const txt = cfgText();
+    if (window.LKLX && LKLX.shareText) { try { LKLX.shareText('两颗心 · 服务器配置', txt); close(); return; } catch (e3) {} }
+    el.querySelector('#cfgCopy').click();
+  };
+  el.querySelector('#cfgSend').onclick = () => {
+    if (!S.room) { toast('先设置房间暗号'); return; }
+    publish({ v: 1, k: 'cfg', op: 'offer', id: myId(), n: S.name || '我',
+      relay: S.relay || '', relayTok: S.relayToken || '', t: Date.now() });
+    toast('已发给她，等她点同意', true);
+    close();
+  };
+}
+/* 收到对方的配置（她换服务器，或她把配置发给我） */
+function onPeerCfg(o) {
+  if (!o || o.id === myId()) return;
+  if (o.op === 'offer') {
+    const nm = peer && peer.n ? peer.n : (o.n || '她');
+    const srv = o.relay || '公共 ntfy.sh';
+    const same = (S.relay || '') === (o.relay || '');
+    if (same) { toast(nm + ' 也要用同一台服务器了（和你现在一样）'); return; }
+    showNote('🔌 ' + nm + ' 想让你连到自己的服务器',
+      '服务器：' + srv + (o.relayTok ? '（带口令）' : '') +
+      '\n同意之后，你们的位置就只经过这台机器，每天 240 条的限制也没了。',
+      'ask', [
+        { t: '同意', fn: () => {
+          S.relay = o.relay || '';
+          S.relayToken = o.relayTok || '';
+          save(); connect(); restartPub();
+          renderMe();
+          showNote('✅ 已连上自建服务器', '现在不再受每天 240 条限制', 'ok');
+          publish({ v: 1, k: 'cfg', op: 'ack', id: myId(), n: S.name || '我', t: Date.now() });
+        } },
+        { t: '先不用', fn: () => hideNote() }
+      ]);
+    return;
+  }
+  if (o.op === 'ack') {
+    const nm = peer && peer.n ? peer.n : (o.n || '她');
+    showNote('✅ ' + nm + ' 已经连上这台服务器', '你们现在只经过自己的机器了', 'ok');
+  }
+}
+/* 扫二维码 / 点链接进来：#c=<配置> */
+function checkHashCfg() {
+  const h = location.hash || '';
+  const m = /[#&]c=([A-Za-z0-9\-_]+)/.exec(h);
+  if (!m) return;
+  let pack = null;
+  try { pack = JSON.parse(b64uDec(m[1])); } catch (e) { return; }
+  if (!pack || pack.v !== 1) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+  const srv = pack.s || '公共 ntfy.sh';
+  const bits = [];
+  if (pack.s) bits.push('服务器：' + pack.s + (pack.t ? '（带口令）' : ''));
+  if (pack.r) bits.push('暗号：' + pack.r);
+  showNote('💌 收到一份「两颗心」配置', bits.join('\n'), 'ask', [
+    { t: '用这份配置', fn: () => {
+      if (pack.s !== undefined) S.relay = pack.s || '';
+      if (pack.t !== undefined) S.relayToken = pack.t || '';
+      if (pack.r) S.room = pack.r;
+      S.welcome = true;
+      save(); connect(); restartPub(); renderMe();
+      showNote('✅ 配置已用上', S.relay ? '已连到 ' + S.relay : '使用公共服务器', 'ok');
+    } },
+    { t: '不用', fn: () => hideNote() }
+  ]);
+}
+
 /* ---- 底部导航 ---- */
 let navCur = 'home';
 function setNav(k) {
@@ -2942,6 +3091,7 @@ function boot() {
     }
   }
 
+  checkHashCfg();
   initDaily();
   renderChat(); renderPeer(); renderTrailPanel(); renderMeChip();
   bindHome();

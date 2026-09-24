@@ -130,6 +130,7 @@ const DEFAULT = {
   relayToken: '',     // 自建服务器的口令（可选）
   places: [],         // 报备地点 [{id,n,lat,lng,r,on}]
   reportPeer: true,   // 到达/离开要不要发消息告诉对方
+  shareApps: true,    // 要不要把「今天开过哪些软件」同步给对方
   focusUntil: 0       // 专注时刻结束时间戳（此期间自己的提醒静音）
 };
 const S = Object.assign({}, DEFAULT, load('lklx.cfg') || {});
@@ -169,10 +170,10 @@ function nativePush() {
 }
 function save() {
   const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames } = S;
+    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
     { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames }));
+      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps }));
   nativePush();
 }
 
@@ -575,13 +576,32 @@ function onFocusOk(o) {
 
 /* ============ 数字生活简报（步数 / 屏幕使用） ============ */
 let myLife = null, peerLife = null, lastLifePub = 0, lifeTickAt = 0;
+let peerLocOffAt = 0;      // 对方报告「定位关了」的时间
 function onPeerLife(o) {
   peerLife = {
     step: o.step || 0, kcal: o.kcal || 0, usageMs: o.usageMs || 0,
     unlocks: o.unlocks || 0, firstUnlock: o.firstUnlock || 0,
-    longest: o.longest || 0, contMin: o.contMin || 0, at: Date.now()
+    longest: o.longest || 0, contMin: o.contMin || 0,
+    scrOff: o.scrOff || 0, scrOn: o.scrOn || 0,
+    bootAt: o.bootAt || 0, shutAt: o.shutAt || 0,
+    locOff: o.locOff ? 1 : 0,
+    // 对方发来的是紧凑格式 [[秒, 名字, 秒数], ...]
+    apps: Array.isArray(o.apps) ? o.apps.map(a => ({ t: (+a[0]) * 1000, n: a[1], d: a[2] })) : null,
+    at: Date.now()
   };
+  if (peerLife.locOff) peerLocOffAt = Date.now();
   fillLifeCard();
+  renderPeer();
+}
+/* 我这边定位是不是关着（关定位检测） */
+function myLocOffNow() {
+  if (myLife && myLife.locOff) return true;
+  try {
+    const o = JSON.parse((hasNative() && LKLX.geo) ? (LKLX.geo() || 'null') : 'null');
+    if (o && o.err && /定位/.test(String(o.err))) return true;
+    if (o && o.ok === 0 && o.err) return true;
+  } catch (e) {}
+  return false;
 }
 function lifeNative() {
   if (!hasNative() || typeof LKLX.life !== 'function') return null;
@@ -597,12 +617,20 @@ function lifeTick() {
   if (myLife && (myLife.contMin >= 1 || myLife.step > 0 || myLife.usageMs > 0)) {
     if (now - lastLifePub >= 600000 && S.room && !S.demo) {
       lastLifePub = now;
-      publish({
+      const msg = {
         v: 1, k: 'life', id: myId(), n: S.name || '我', t: now,
         step: myLife.step || 0, kcal: myLife.kcal || 0, usageMs: myLife.usageMs || 0,
         unlocks: myLife.unlocks || 0, firstUnlock: myLife.firstUnlock || 0,
-        longest: myLife.longest || 0, contMin: myLife.contMin || 0
-      });
+        longest: myLife.longest || 0, contMin: myLife.contMin || 0,
+        scrOff: myLife.scrOff || 0, scrOn: myLife.scrOn || 0,
+        bootAt: myLife.bootAt || 0, shutAt: myLife.shutAt || 0,
+        locOff: myLife.locOff ? 1 : 0
+      };
+      // 使用记录：只发最近 15 条，够看又不占流量
+      if (S.shareApps !== false && myLife.apps && myLife.apps.length) {
+        msg.apps = myLife.apps.slice(-15).map(a => [Math.round(a.t / 1000), a.n, a.d]);
+      }
+      publish(msg);
     }
   }
 }
@@ -610,6 +638,49 @@ function fmtDur(ms) {
   if (ms == null) return '—';
   const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
   return h > 0 ? h + ' 小时 ' + m + ' 分' : m + ' 分钟';
+}
+function fmtClock(ts) {
+  if (!ts) return null;
+  const d = new Date(ts); if (isNaN(d)) return null;
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function fmtClockSec(ts) {
+  if (!ts) return null;
+  const d = new Date(ts); if (isNaN(d)) return null;
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function fmtUse(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return sec + ' 秒';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + ' 分钟';
+  return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+}
+/* 开关机 / 熄屏 那一行 */
+function powerLine(L) {
+  const bits = [];
+  if (L.shutAt) bits.push('🔌 ' + fmtClock(L.shutAt * 1000) + ' 关机');
+  if (L.bootAt) bits.push('📴 ' + fmtClock(L.bootAt * 1000) + ' 开机');
+  if (!bits.length && L.scrOff) bits.push('🌙 ' + fmtClock(L.scrOff) + ' 熄屏');
+  if (L.scrOn) bits.push('☀️ ' + fmtClock(L.scrOn) + ' 亮屏');
+  return bits.length ? `<div class="powline">${bits.join('　·　')}</div>` : '';
+}
+/* 今天开过哪些软件 */
+function appsBlock(L) {
+  if (!L.apps) {
+    return `<div class="appsnote">${L.usageGranted === 0
+      ? '对方还没允许「使用情况访问」，看不到软件记录'
+      : '还没收到软件记录（每 10 分钟同步一次）'}</div>`;
+  }
+  if (!L.apps.length) return '<div class="appsnote">今天还没有记录</div>';
+  const list = L.apps.slice(-14).reverse();
+  return `<div class="applist">${list.map(a => `<div class="approw">
+      <span class="at">${fmtClockSec(a.t)}</span>
+      <span class="an">${esc(a.n || '未知')}</span>
+      <span class="ad">${fmtUse(a.d)}</span>
+    </div>`).join('')}</div>`;
 }
 function lifeBlock(who, L) {
   if (!L) return `<div class="lifeblock"><div class="lb-head">${who}<span>还没收到数据</span></div>
@@ -623,8 +694,13 @@ function lifeBlock(who, L) {
   const extra = [];
   if (L.longest) extra.push('最长一次 ' + fmtDur(L.longest));
   if (L.contMin >= 3) extra.push('已连续用 ' + L.contMin + ' 分钟');
-  return `<div class="lifeblock"><div class="lb-head">${who}<span>${extra.join(' · ') || '今天'}</span></div>
-    <div class="lb-grid">${parts.map(p => `<div class="lb"><b>${p[1]}</b><small>${p[0]}</small></div>`).join('')}</div></div>`;
+  return `<div class="lifeblock">
+    <div class="lb-head">${who}<span>${extra.join(' · ') || '今天'}</span></div>
+    <div class="lb-grid">${parts.map(p => `<div class="lb"><b>${p[1]}</b><small>${p[0]}</small></div>`).join('')}</div>
+    ${powerLine(L)}
+    <div class="lb-sub">今天开过这些软件</div>
+    ${appsBlock(L)}
+  </div>`;
 }
 function renderLifeInner() {
   const native = hasNative();
@@ -681,8 +757,10 @@ function onPeerPos(o) {
     av: o.av || (peer && peer.av) || null,
     n: o.n || (peer && peer.n) || '',
     acc: o.ac, speed: o.sp, batt: o.b, chg: o.cg,
+    lo: !!o.lo,
     ot: !!o.ot, at: Date.now(), t: o.t
   };
+  if (o.lo) peerLocOffAt = peerLocOffAt || Date.now();
   if (fresh) {
     if (S.trail) {
       trailPush(peerHistory, { lat: o.lat, lng: o.lon, t: o.t });
@@ -1280,6 +1358,7 @@ function renderPeerPanel(m) {
   $p.innerHTML = `
   <div class="card">
     <h4>${Kitty.heart('#FF6B9D', 13)} 她现在</h4>
+    ${(peer.lo || (peerLife && peerLife.locOff)) ? `<div class="locwarn">📍 ${esc((peer.n) || '她')} 现在把定位关了 —— 看到的是关闭前最后一次的位置</div>` : ''}
     ${(peerAddress || peerWeather) ? `<div class="peerwhere">
       <span>📍 ${esc(peerAddress || '正在定位…')}</span>
       ${peerWeather ? `<span class="pw">${weatherIcon(peerWeather.code)} ${peerWeather.temp}°C</span>` : ''}
@@ -1538,6 +1617,10 @@ function renderMe() {
       <div class="k">接收 iPhone 后台补点<em>OwnTracks 格式的原始报文</em></div>
       <input type="checkbox" id="swOT" ${S.otrack !== false ? 'checked' : ''}>
     </div>
+    <div class="sw">
+      <div class="k">同步「今天开过哪些软件」<em>一起看两个人的手机使用记录</em></div>
+      <input type="checkbox" id="swApps" ${S.shareApps !== false ? 'checked' : ''}>
+    </div>
     <div class="note" style="margin-top:8px">
       网页切到后台后定位会被系统暂停 —— 这是手机的限制，不是应用坏了。<br><br>
       <b>安卓</b>：用我做的安卓版 App（带常驻服务），锁屏也一直更新。<br>
@@ -1667,6 +1750,11 @@ function renderMe() {
   $('#swOT').onchange = e => {
     S.otrack = e.target.checked; save();
     toast(S.otrack ? '已开启：接收 iPhone 后台补点' : '已忽略后台补点');
+  };
+  const swA = $('#swApps');
+  if (swA) swA.onchange = e => {
+    S.shareApps = e.target.checked; save();
+    toast(S.shareApps ? '会同步使用记录' : '不再同步使用记录');
   };
   $('#btnOtCopy').onclick = async () => {
     if (!S.room) return toast('先设置暗号');
@@ -2025,6 +2113,28 @@ function renderPlaces() {
 
 /* ---- 重要动态提醒：低电量 / 长时间没更新 ---- */
 const alertSent = {};
+let locOffToldAt = 0;
+function checkLocOff() {
+  // 对方报告「定位关了」—— 位置消息里的标志优先，其次看简报
+  const herOff = (peer && peer.lo) || (peerLife && peerLife.locOff);
+  if (herOff && !peerLocOffAt) peerLocOffAt = Date.now();
+  if (herOff && peerLocOffAt) {
+    const key = peerLocOffAt;
+    if (locOffToldAt !== key && Date.now() - key < 3600000) {
+      locOffToldAt = key;
+      const nm = peer && peer.n ? peer.n : '她';
+      showNote('📍 ' + nm + ' 的定位关掉了', '可能是关了系统定位、撤了权限，或者退出了 App。', 'warn');
+      notifyLocal('📍 ' + nm + ' 关了定位', '暂时看不到她的位置了');
+    }
+  }
+  // 我这边关着定位，也提醒一下自己
+  if (myLocOffNow() && !checkLocOff._mine) {
+    checkLocOff._mine = true;
+    showNote('⚠️ 你的定位关着', '对方看不到你的位置。下拉通知栏把「位置信息」打开就好。', 'warn');
+  } else if (!myLocOffNow()) {
+    checkLocOff._mine = false;
+  }
+}
 function checkAlerts() {
   if (!peer) return;
   const nm = peer.n || '她';
@@ -2258,6 +2368,8 @@ function renderHomeStatus(force) {
   }
   const av = Kitty.avatarHTML(peer.av, 50);
   const chips = [];
+  const herLocOff = !!(peer.lo || (peerLife && peerLife.locOff));
+  if (herLocOff) chips.push('<span class="schip warn">📍 定位已关闭</span>');
   chips.push(`<span class="schip">🕒 ${esc(ago(peer.at))}</span>`);
   if (peer.batt != null) {
     chips.push(`<span class="schip${peer.batt <= 20 && !peer.chg ? ' warn' : ''}">🔋 ${peer.batt}%${peer.chg ? ' 充电中' : ''}</span>`);
@@ -2270,7 +2382,7 @@ function renderHomeStatus(force) {
       <span class="live ${online ? '' : 'idle'}"></span></div>
     <div class="sinfo">
       <div class="sname">${esc(peer.n || '宝贝')}
-        <span class="st ${online ? '' : 'off'}">${online ? '在线' : (idleMin != null && idleMin > 30 ? '很久没更新' : '可能没在看手机')}</span>
+        <span class="st ${herLocOff ? 'off' : (online ? '' : 'off')}">${herLocOff ? '关了定位' : (online ? '在线' : (idleMin != null && idleMin > 30 ? '很久没更新' : '可能没在看手机'))}</span>
       </div>
       <div class="schips">${chips.join('')}</div>
     </div>
@@ -2989,6 +3101,7 @@ function tick() {
   if (peer) renderPeer();
   if (peer && !S.demo) { checkPlaces(); }
   if (peer) checkAlerts();
+  checkLocOff();
   lifeTick();
   if (nearWatch && peer && me && !nearWatch.fired) {
     const d = haversine(me, peer);

@@ -1248,3 +1248,25 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
 [data-theme="night"] .stepnote{color:#D3A6BD}
 .ubtns.col{flex-direction:column;gap:8px}
 .ubtns.col .ubtn{width:100%;padding:12px}
+
+/* ---------- 使用记录 / 开关机 / 关定位 ---------- */
+.lb-sub{margin:12px 0 7px;font-size:11.5px;font-weight:900;color:#B98BA0;letter-spacing:.3px}
+.powline{margin-top:11px;padding:8px 11px;border-radius:12px;font-size:11.5px;font-weight:800;
+  color:#7A4A5C;background:rgba(255,255,255,.75);line-height:1.6}
+[data-theme="night"] .powline{background:rgba(255,255,255,.06);color:#F0CCDE}
+.applist{display:flex;flex-direction:column;gap:1px;border-radius:12px;overflow:hidden}
+.approw{display:flex;align-items:center;gap:9px;padding:7px 11px;font-size:12.5px;
+  background:rgba(255,255,255,.7)}
+.approw:nth-child(odd){background:rgba(255,255,255,.45)}
+[data-theme="night"] .approw{background:rgba(255,255,255,.05)}
+[data-theme="night"] .approw:nth-child(odd){background:rgba(255,255,255,.02)}
+.approw .at{flex:none;font-variant-numeric:tabular-nums;font-weight:700;color:#B98BA0;font-size:11px}
+.approw .an{flex:1;font-weight:800;color:#4A2436;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[data-theme="night"] .approw .an{color:#FFE9F2}
+.approw .ad{flex:none;font-size:11px;color:#9C7183;font-weight:700}
+.appsnote{font-size:11.5px;color:#B98BA0;line-height:1.6;padding:4px 0}
+.locwarn{
+  margin:0 0 11px;padding:10px 13px;border-radius:14px;font-size:12.5px;font-weight:800;line-height:1.55;
+  color:#A8341A;background:linear-gradient(140deg,#FFF0EC,#FFE2D8);border:1px solid rgba(255,150,120,.4)
+}
+[data-theme="night"] .locwarn{background:rgba(255,120,90,.14);color:#FFB49B;border-color:rgba(255,150,120,.3)}

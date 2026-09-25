@@ -46,7 +46,13 @@ img{display:block;max-width:100%}
 
 /* ---------- 布局 ---------- */
 #app{position:fixed;inset:0;overflow:hidden}
-#map{position:absolute;inset:0;z-index:1;background:var(--p100)}
+/* 高德的地图canvas固定只按 2 倍渲染（源码里写死 Math.min(2, devicePixelRatio)），
+   而很多手机屏幕是 3~3.75 倍，于是画布被拉大 1.8 倍 → 糊。
+   办法：把容器先放大 k 倍去渲染，再用 transform 缩回来，
+   有效分辨率就从 2 倍提到 min(dpr,3) 倍。AMap 取的是 offsetX/offsetY
+   （按元素本地坐标算，浏览器会自动补偿缩放），所以拖动和点击不受影响。 */
+#mapbox{position:absolute;left:0;top:0;z-index:1;transform-origin:0 0;will-change:transform}
+#map{position:absolute;inset:0;background:var(--p100)}
 #veil{position:absolute;inset:0;z-index:2;pointer-events:none;
   background:linear-gradient(180deg,rgba(255,247,250,.85) 0%,rgba(255,247,250,0) 16%),
              linear-gradient(0deg,rgba(255,233,242,.92) 0%,rgba(255,233,242,0) 26%)}
@@ -1270,3 +1276,25 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:24px;height:24px;b
   color:#A8341A;background:linear-gradient(140deg,#FFF0EC,#FFE2D8);border:1px solid rgba(255,150,120,.4)
 }
 [data-theme="night"] .locwarn{background:rgba(255,120,90,.14);color:#FFB49B;border-color:rgba(255,150,120,.3)}
+
+/* ---------- 时光：条目上的头像 ---------- */
+.tlav{
+  position:absolute;left:-38px;top:2px;width:30px;height:30px;border-radius:50%;overflow:hidden;
+  display:grid;place-items:center;background:#fff;border:2.5px solid var(--p300);
+  box-shadow:0 6px 14px -8px rgba(214,54,114,.9);z-index:2
+}
+.tlav img{width:100%;height:100%;object-fit:cover}
+.tlav.me{border-color:#7FD8C4}
+.tlav.peer{border-color:var(--p400)}
+.tlav.live::after{
+  content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--mint);
+  animation:avPulse 1.9s ease-out infinite
+}
+@keyframes avPulse{0%{transform:scale(.85);opacity:.9}100%{transform:scale(1.35);opacity:0}}
+.tlrail{padding-left:40px}
+.tlrail::before{left:14px}
+/* 简报块头部的头像 */
+.lb-av{width:26px;height:26px;border-radius:50%;overflow:hidden;flex:none;
+  display:grid;place-items:center;background:#fff;box-shadow:0 3px 8px -4px rgba(214,54,114,.7)}
+.lb-av img{width:100%;height:100%;object-fit:cover}
+.lb-head{gap:7px}

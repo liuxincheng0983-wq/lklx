@@ -123,7 +123,8 @@ const Crypto_ = (function () {
 /* ============ 3. 状态 ============ */
 const DEFAULT = {
   name: '', room: '', avatar: { t: 'k', c: '#FF6B9D' },
-  theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true, mapStyle: 'macaron',
+  theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true, mapStyle: 'normal',
+  mapHD: true,        // 地图高清渲染（抗糊）
   trail: true, notify: false, sound: true, welcome: false, demo: false,
   otrack: true,
   relay: '',          // 自建服务器地址（留空用公共 ntfy.sh）
@@ -170,10 +171,12 @@ function nativePush() {
 }
 function save() {
   const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps } = S;
+    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps,
+    mapHD, styleFix } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
     { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps }));
+      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps,
+      mapHD, styleFix }));
   nativePush();
 }
 
@@ -315,7 +318,7 @@ function vibe(ms) { if (navigator.vibrate) navigator.vibrate(ms || 14); }
    所以看着发虚。矢量渲染没有这个问题，配色/图标/路名层级也和高德 App 一致。
    ★ 注意：AMap 坐标是 [经度, 纬度]，和 Leaflet 的 [纬度, 经度] 相反。 */
 const MAP_STYLES = [
-  ['macaron', '马卡龙'], ['fresh', '清新'], ['normal', '标准'], ['light', '淡雅'],
+  ['normal', '标准 · 有楼栋'], ['macaron', '马卡龙'], ['fresh', '清新'], ['light', '淡雅'],
   ['whitesmoke', '烟灰'], ['graffiti', '涂鸦'], ['blue', '蓝调']
 ];
 
@@ -354,9 +357,13 @@ function initMap() {
       + '<span style="font-size:12px;opacity:.75">检查一下网络，然后下拉刷新</span></div>';
     return;
   }
+  applyMapHD();          // 先按高清把容器尺寸定好，再让高德建图
   amap = new AMap.Map('map', {
     zoom: 13, center: [113.2644, 23.1291], viewMode: '2D',
-    resizeEnable: true, zooms: [3, 19], mapStyle: mapStyleId()
+    resizeEnable: true, zooms: [3, 20], mapStyle: mapStyleId(),
+    // 不显式要的话，某些精简样式会把「建筑」整层去掉 —— 就是看不到楼与楼间隔的原因
+    features: ['bg', 'road', 'building', 'point'],
+    showBuildingBlock: true
   });
   amap.on('click', () => {
     const s = $('#sheet');
@@ -367,8 +374,33 @@ function initMap() {
   setTimeout(() => { try { amap.resize(); } catch (e) {} }, 1200);
 }
 
+/* 高德的地图canvas写死了 Math.min(2, devicePixelRatio) —— 屏幕倍率高于 2 的手机
+   （3x / 3.75x 很常见）看到的就是被拉大的模糊图。
+   把容器放大 k 倍去渲染，再用 transform 缩回来，有效分辨率就从 2x 提到 min(dpr,3)x。
+   #mapbox 设了 transform-origin:0 0，所以缩放不会改变它左上角的锚点。 */
+function mapHDScale() {
+  const dpr = window.devicePixelRatio || 1;
+  if (S.mapHD === false) return 1;
+  const k = Math.min(dpr, 3) / 2;
+  return k > 1.05 ? k : 1;
+}
+function applyMapHD() {
+  const box = document.getElementById('mapbox');
+  if (!box) return;
+  const k = mapHDScale();
+  if (k === 1) {
+    box.style.width = '100%'; box.style.height = '100%'; box.style.transform = 'none';
+  } else {
+    box.style.width = (k * 100).toFixed(3) + '%';
+    box.style.height = (k * 100).toFixed(3) + '%';
+    box.style.transform = 'scale(' + (1 / k).toFixed(6) + ')';
+  }
+  return k;
+}
 function applyLayer() {
   if (!amap) return;
+  applyMapHD();
+  try { amap.resize(); } catch (e) {}
   [tileSat, tileRoad].forEach(t => { if (t) { try { amap.remove(t); } catch (e) {} } });
   tileSat = tileRoad = null;
   if (S.layer === 'sat') {
@@ -682,8 +714,10 @@ function appsBlock(L) {
       <span class="ad">${fmtUse(a.d)}</span>
     </div>`).join('')}</div>`;
 }
-function lifeBlock(who, L) {
-  if (!L) return `<div class="lifeblock"><div class="lb-head">${who}<span>还没收到数据</span></div>
+function lifeBlock(who, L, isMe) {
+  const av = isMe ? Kitty.avatarHTML(S.avatar, 26)
+                  : Kitty.avatarHTML((peer && peer.av) || { t: 'k', c: '#FFC9DD' }, 26);
+  if (!L) return `<div class="lifeblock"><div class="lb-head"><span class="lb-av">${av}</span>${who}<span>还没收到数据</span></div>
     <div class="lb-note">等对方打开 App、允许「使用情况访问」后，这里就会出现 TA 今天的手机报告。</div></div>`;
   const parts = [
     ['🕒 使用', fmtDur(L.usageMs)],
@@ -695,7 +729,7 @@ function lifeBlock(who, L) {
   if (L.longest) extra.push('最长一次 ' + fmtDur(L.longest));
   if (L.contMin >= 3) extra.push('已连续用 ' + L.contMin + ' 分钟');
   return `<div class="lifeblock">
-    <div class="lb-head">${who}<span>${extra.join(' · ') || '今天'}</span></div>
+    <div class="lb-head"><span class="lb-av">${av}</span>${who}<span>${extra.join(' · ') || '今天'}</span></div>
     <div class="lb-grid">${parts.map(p => `<div class="lb"><b>${p[1]}</b><small>${p[0]}</small></div>`).join('')}</div>
     ${powerLine(L)}
     <div class="lb-sub">今天开过这些软件</div>
@@ -706,8 +740,15 @@ function renderLifeInner() {
   const native = hasNative();
   let body = '';
   if (native) {
-    body += lifeBlock('我', myLife);
-    body += lifeBlock(peer && peer.n ? peer.n : '她', peerLife);
+    body += lifeBlock('我', myLife, true);
+    body += lifeBlock(peer && peer.n ? peer.n : '她', peerLife, false);
+    // 步数读不到时，明确告诉用户卡在哪一步
+    if (myLife && myLife.stepSensor === 0) {
+      body += `<div class="lb-note" style="margin-top:10px">这台手机没有计步传感器，步数读不到（不影响其它功能）。</div>`;
+    } else if (myLife && myLife.stepGranted === 0) {
+      body += `<div class="lb-note" style="margin-top:10px">步数需要「身体活动」权限 —— 没给的话系统不会把计步数据给 App。
+        <button class="btn sm line" id="btnLifeAsk" style="margin-top:8px">允许读取步数</button></div>`;
+    }
     if (myLife && !myLife.usageGranted) {
       body += `<div class="lb-note" style="margin-top:10px">想看到「使用时长 / 解锁次数」，需要在系统里允许「两颗心」的使用情况访问。
         <button class="btn sm ghost" id="btnUsage" style="margin-top:8px">去开启使用情况访问</button>
@@ -1643,6 +1684,8 @@ function renderMe() {
       <input type="checkbox" id="swTheme" ${S.theme === 'night' ? 'checked' : ''}></div>
     <div class="sw"><div class="k">卫星地图</div>
       <input type="checkbox" id="swSat" ${S.layer === 'sat' ? 'checked' : ''}></div>
+    <div class="sw"><div class="k">高清地图<em>屏幕倍数高时更锐利；若拖动异常可关掉</em></div>
+      <input type="checkbox" id="swMapHD" ${S.mapHD !== false ? 'checked' : ''}></div>
     <div class="k" style="padding:6px 0 8px">地图配色<em>矢量渲染 · 和高德 App 同一套</em></div>
     <div class="mchips" id="styleChips">
       ${MAP_STYLES.map(o => `<button class="mchip ${(S.mapStyle || 'macaron') === o[0] ? 'on' : ''}" data-s="${o[0]}">${o[1]}</button>`).join('')}
@@ -1764,6 +1807,12 @@ function renderMe() {
   };
   $('#swTheme').onchange = e => { S.theme = e.target.checked ? 'night' : 'day'; save(); applyTheme(); };
   $('#swSat').onchange = e => { S.layer = e.target.checked ? 'sat' : 'std'; save(); applyLayer(); };
+  const swMHD = $('#swMapHD');
+  if (swMHD) swMHD.onchange = e => {
+    S.mapHD = e.target.checked; save(); applyLayer();
+    setTimeout(() => { try { amap && amap.resize(); } catch (x) {} }, 120);
+    toast(S.mapHD ? '已开启高清地图' : '已关闭高清地图');
+  };
   $('#swHD') && ($('#swHD').onchange = e => { S.hd = e.target.checked; save(); applyLayer(); });
   const chips = $('#styleChips');
   if (chips) chips.addEventListener('click', e => {
@@ -2557,8 +2606,11 @@ function tlRow(it, i) {
   const nm = tlName(it, i);
   const who = it.who === 'peer' ? 'peer' : 'me';
   const whoName = who === 'peer' ? ((peer && peer.n) || '她') : '我';
+  const av = who === 'peer'
+    ? Kitty.avatarHTML((peer && peer.av) || { t: 'k', c: '#FFC9DD' }, 30)
+    : Kitty.avatarHTML(S.avatar, 30);
   return `<div class="tlitem ${who}${it.live ? ' now' : ''}">
-    <span class="tldot ${who}"><i></i></span>
+    <span class="tlav ${who}${it.live ? ' live' : ''}">${av}</span>
     <div class="tlwrap" style="flex:1;position:relative">
       <div class="tlcard" data-who="${who}" data-tl="${i}">
         <div class="tt">
@@ -2654,8 +2706,10 @@ function tlGeocode(it, k, i) {
             const a = res.regeocode.formattedAddress || '';
             out = a ? a.split(',').slice(0, 2).join(' ') : '';
           }
-          if (out) {
-            S.tlNames = S.tlNames || {}; S.tlNames[k] = out; save();
+          // 用户手动改过名字就不许自动反查覆盖它（之前就是这个把自定义地名冲掉的）
+          S.tlNames = S.tlNames || {};
+          if (!S.tlNames[k]) {
+            S.tlNames[k] = out; save();
             if (isTimelineOpen()) renderTimeline();
           }
         });
@@ -3174,6 +3228,14 @@ function boot() {
     <button class="fab" id="btnTheme" title="夜间模式">${Kitty.glyph('eye', 20)}</button>
     <button class="fab" id="btnLocate" title="回到我的位置">${Kitty.glyph('gps', 20)}</button>`;
   bindUI();
+
+  // 一次性迁移：马卡龙这类精简样式把「建筑」整层去掉了，看不到楼栋，
+  // 之前默认就是它 —— 升级后自动换成标准样式，用户自己再改回来也行。
+  if (!S.styleFix) {
+    S.styleFix = 1;
+    if (!S.mapStyle || S.mapStyle === 'macaron') S.mapStyle = 'normal';
+    save();
+  }
 
   const savedTrail = load('lklx.trail');
   if (savedTrail && Array.isArray(savedTrail)) peerHistory = savedTrail;

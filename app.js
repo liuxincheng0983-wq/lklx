@@ -635,6 +635,7 @@ function onPeerLife(o) {
     locOff: o.locOff ? 1 : 0,
     // 对方发来的是紧凑格式 [[秒, 名字, 秒数], ...]
     apps: Array.isArray(o.apps) ? o.apps.map(a => ({ t: (+a[0]) * 1000, n: a[1], d: a[2] })) : null,
+    appv: o.appv || '',
     at: Date.now()
   };
   if (peerLife.locOff) peerLocOffAt = Date.now();
@@ -672,7 +673,8 @@ function lifeTick() {
         longest: myLife.longest || 0, contMin: myLife.contMin || 0,
         scrOff: myLife.scrOff || 0, scrOn: myLife.scrOn || 0,
         bootAt: myLife.bootAt || 0, shutAt: myLife.shutAt || 0,
-        locOff: myLife.locOff ? 1 : 0
+        locOff: myLife.locOff ? 1 : 0,
+        appv: WEB_VER
       };
       // 使用记录：只发最近 15 条，够看又不占流量
       if (S.shareApps !== false && myLife.apps && myLife.apps.length) {
@@ -768,21 +770,37 @@ function renderLifeInner() {
   /* ---------- 她的情况放最前面（这是你真正想看的） ---------- */
   if (peerLife) {
     body += lifeBlock(herName, peerLife, false);
+    if (peerLife.appv) {
+      const bad = peerLife.appv !== WEB_VER;
+      body += `<div class="lb-note" style="margin-top:8px">她的 App：${esc(peerLife.appv)}`
+        + (bad ? '（和你的 <b>' + WEB_VER + '</b> 不一样，建议都更新到同一版）' : '') + '</div>';
+    }
   } else {
     // 一条都没收到过 → 把可能的原因和怎么解决写清楚
     const sheHasApp = !!(peer && peer.ot === false);   // 有原生壳的痕迹
+    /* 关键判断：她的位置在更新，说明 App 在跑；但收不到手机报告，
+       那就只有两种可能 —— 版本旧，或者没给「使用情况访问」权限。
+       位置也没有 → 说明她那边 App 根本没在跑。 */
+    const freshPeer = peer && (Date.now() - peer.at < 3600000);
+    let reason, advice;
+    if (freshPeer) {
+      reason = '她的位置一直在更新，说明 App 在跑 —— 但收不到手机报告。';
+      advice = '最可能是这两条：<br>'
+        + '① 她的 App 是<b>旧版</b>（旧版只报位置，不报手机信息）→ 让她更新<br>'
+        + '② 她没允许「<b>使用情况访问</b>」权限 → 点下面的按钮提醒她';
+    } else {
+      reason = '连她的位置都很久没更新了。';
+      advice = '说明她那边 App 没在跑：<br>'
+        + '① 她手机上可能<b>没装这个 App</b>（用网页版读不到系统数据）<br>'
+        + '② 或者装了但一直没打开<br>'
+        + '③ 或者她的网络/后台被系统限制了';
+    }
     body += `<div class="lifeblock">
       <div class="lb-head">
         <span class="lb-av">${Kitty.avatarHTML((peer && peer.av) || { t: 'k', c: '#FFC9DD' }, 26)}</span>
-        ${esc(herName)}<span>还没收到数据</span>
+        ${esc(herName)}<span>${freshPeer ? 'App 在跑 · 没报告' : '联系不上她的 App'}</span>
       </div>
-      <div class="lb-note">
-        要看到她的手机信息，得满足这几条（缺一条都收不到）：<br>
-        ① 她手机上也装了<b>安卓版 App</b>（用网页版读不到系统数据）<br>
-        ② App 是<b>新的版本</b>（旧版不会上报这些）<br>
-        ③ 她允许了「<b>使用情况访问</b>」权限<br>
-        ④ 她最近 10 分钟内开过 App
-      </div>
+      <div class="lb-note">${esc(reason)}<br>${advice}</div>
       <button class="btn sm ghost" id="btnAskHer" style="margin-top:9px">发个提示，让她开一下</button>
     </div>`;
   }

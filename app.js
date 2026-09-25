@@ -586,6 +586,7 @@ async function onRaw(message) {
   else if (o.k === 'life') onPeerLife(o);
   else if (o.k === 'tl') onPeerTl(o);
   else if (o.k === 'cfg') onPeerCfg(o);
+  else if (o.k === 'need') onPeerNeed(o);
   else if (o.k === 'd' && window.Daily) window.Daily.onMsg(o);
 }
 /* 对方到某地/离开某地的自动报备 */
@@ -752,29 +753,49 @@ function lifeBlock(who, L, isMe) {
   </div>`;
 }
 function renderLifeInner() {
+  const herName = (peer && peer.n) ? peer.n : '她';
   const native = hasNative();
   let body = '';
-  if (native) {
-    body += lifeBlock('我', myLife, true);
-    body += lifeBlock(peer && peer.n ? peer.n : '她', peerLife, false);
-    // 步数读不到时，明确告诉用户卡在哪一步
-    if (myLife && myLife.stepSensor === 0) {
-      body += `<div class="lb-note" style="margin-top:10px">这台手机没有计步传感器，步数读不到（不影响其它功能）。</div>`;
-    } else if (myLife && myLife.stepGranted === 0) {
-      body += `<div class="lb-note" style="margin-top:10px">步数需要「身体活动」权限 —— 没给的话系统不会把计步数据给 App。
-        <button class="btn sm line" id="btnLifeAsk" style="margin-top:8px">允许读取步数</button></div>`;
-    }
-    if (myLife && !myLife.usageGranted) {
-      body += `<div class="lb-note" style="margin-top:10px">想看到「使用时长 / 解锁次数」，需要在系统里允许「两颗心」的使用情况访问。
-        <button class="btn sm ghost" id="btnUsage" style="margin-top:8px">去开启使用情况访问</button>
-        <button class="btn sm line" id="btnLifeAsk" style="margin-top:8px">允许读取步数</button></div>`;
-    }
-  } else {
-    body = `<div class="lb-note">手机使用时长、解锁次数、步数这些数据只有<b>安卓版 App</b>能读（需要系统级权限）。
-      <br>网页版先看「今日到过的地方」和距离就行啦。</div>`;
+
+  if (!native) {
+    return `<div class="card">
+      <h4>${Kitty.glyph('bell', 13)} 她的手机</h4>
+      <div class="lb-note">手机使用记录、开关机、步数这些只有<b>安卓版 App</b>能读。
+        <br>你现在是用浏览器打开的，看不了这些 —— 用安卓版 App 打开就有。</div>
+    </div>`;
   }
-  return `<div class="card">
-    <h4>${Kitty.glyph('bell', 13)} 数字生活简报</h4>${body}</div>`;
+
+  /* ---------- 她的情况放最前面（这是你真正想看的） ---------- */
+  if (peerLife) {
+    body += lifeBlock(herName, peerLife, false);
+  } else {
+    // 一条都没收到过 → 把可能的原因和怎么解决写清楚
+    const sheHasApp = !!(peer && peer.ot === false);   // 有原生壳的痕迹
+    body += `<div class="lifeblock">
+      <div class="lb-head">
+        <span class="lb-av">${Kitty.avatarHTML((peer && peer.av) || { t: 'k', c: '#FFC9DD' }, 26)}</span>
+        ${esc(herName)}<span>还没收到数据</span>
+      </div>
+      <div class="lb-note">
+        要看到她的手机信息，得满足这几条（缺一条都收不到）：<br>
+        ① 她手机上也装了<b>安卓版 App</b>（用网页版读不到系统数据）<br>
+        ② App 是<b>新的版本</b>（旧版不会上报这些）<br>
+        ③ 她允许了「<b>使用情况访问</b>」权限<br>
+        ④ 她最近 10 分钟内开过 App
+      </div>
+      <button class="btn sm ghost" id="btnAskHer" style="margin-top:9px">发个提示，让她开一下</button>
+    </div>`;
+  }
+
+  /* ---------- 我自己的放后面，小一号 ---------- */
+  body += `<div class="lb-me">
+    <div class="lb-me-h" id="lbMeToggle">我自己的 · 点开看看</div>
+    <div class="lb-me-b" id="lbMeBody" hidden>${lifeBlock('我', myLife, true)}</div>
+  </div>`;
+
+  const html = `<div class="card">
+    <h4>${Kitty.glyph('bell', 13)} 她的手机</h4>${body}</div>`;
+  return html;
 }
 /* 只刷新 lifeCard 这一个节点，不重建整个足迹面板（保住滚动位置） */
 function fillLifeCard() {
@@ -785,6 +806,32 @@ function fillLifeCard() {
   if (u) u.onclick = () => { try { LKLX.openUsage(); } catch (e) {} };
   const a = el.querySelector('#btnLifeAsk');
   if (a) a.onclick = () => { try { LKLX.lifeAsk(); } catch (e) {} toast('去系统里点「允许」即可'); };
+  const ask = el.querySelector('#btnAskHer');
+  if (ask) ask.onclick = () => {
+    if (!S.room) { toast('先设置房间暗号'); return; }
+    publish({ v: 1, k: 'need', id: myId(), n: S.name || '我', what: 'usage', t: Date.now() });
+    toast('已经提醒她了，她打开 App 就会看到', true);
+  };
+  const tg = el.querySelector('#lbMeToggle');
+  if (tg) tg.onclick = () => {
+    const b = el.querySelector('#lbMeBody');
+    b.hidden = !b.hidden;
+    tg.textContent = b.hidden ? '我自己的 · 点开看看' : '收起我自己的';
+  };
+}
+
+/* 对方请求我们开权限时，弹个提示（这样她不用猜） */
+function onPeerNeed(o) {
+  if (!o || o.id === myId()) return;
+  const nm = peer && peer.n ? peer.n : (o.n || '她');
+  if (o.what === 'usage') {
+    if (myLife && myLife.usageGranted) { toast(nm + ' 想要看你的手机信息，你已经开着了'); return; }
+    showNote('📱 ' + nm + ' 想看到你的手机使用记录',
+      '需要在系统里允许「两颗心」的<b>使用情况访问</b>权限。', 'ask', [
+        { t: '去开启', fn: () => { try { LKLX.openUsage(); } catch (e) {} } },
+        { t: '先不用', fn: () => hideNote() }
+      ]);
+  }
 }
 /* OwnTracks 报的是原始 GPS（WGS84）且不经加密，
    必须转成 GCJ-02 才能跟高德地图的底图对上。 */

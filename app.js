@@ -125,6 +125,9 @@ const DEFAULT = {
   name: '', room: '', avatar: { t: 'k', c: '#FF6B9D' },
   theme: 'day', layer: 'std', interval: 8, encrypt: true, hd: true, mapStyle: 'normal',
   mapHD: true,        // 地图高清渲染（抗糊）
+  amapWebKey: '',     // 高德「Web服务」Key —— 填了才能查到楼栋/商场级地名
+  amapWebCode: '',    // 它配套的安全密钥（可选）
+  tlGeo: null,        // 反查出来的地名（和用户自己起的 tlNames 分开存）
   trail: true, notify: false, sound: true, welcome: false, demo: false,
   otrack: true,
   relay: '',          // 自建服务器地址（留空用公共 ntfy.sh）
@@ -183,12 +186,12 @@ function nativePush() {
 }
 function save() {
   const { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps,
-    mapHD, styleFix } = S;
+    relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, tlGeo, shareApps,
+    mapHD, styleFix, amapWebKey, amapWebCode } = S;
   localStorage.setItem('lklx.cfg', JSON.stringify(
     { name, room, avatar, theme, layer, interval, encrypt, trail, notify, sound, welcome, demo, hd, otrack, mapStyle,
-      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, shareApps,
-      mapHD, styleFix }));
+      relay, relayToken, places, reportPeer, focusUntil, tl, tlNames, tlGeo, shareApps,
+      mapHD, styleFix, amapWebKey, amapWebCode }));
   nativePush();
 }
 
@@ -847,14 +850,13 @@ function updatePeerAddress() {
   try {
     AMap.plugin('AMap.Geocoder', () => {
       try {
-        const geo = new AMap.Geocoder({});
+        const geo = new AMap.Geocoder({ radius: 500, extensions: 'all' });
         geo.getAddress([lo, la], (status, result) => {
           if (peerAddrSig !== sig) return;
+          console.log('[地名/她] status=' + status);
           if (status === 'complete' && result && result.regeocode) {
-            const rc = result.regeocode;
-            const a = rc.formattedAddress || '';
-            const poi = rc.pois && rc.pois[0];
-            const out = (poi && poi.name) || (a ? a.split(',').slice(0, 3).join(' ') : '');
+            const out = pickPlaceName(result.regeocode);
+            console.log('[地名/她] → ' + (out || '(空)'));
             if (out) { peerAddress = out; renderPeer(); }
           }
         });
@@ -1745,6 +1747,33 @@ function renderMe() {
   </div>
 
   <div class="card">
+    <h4>${Kitty.glyph('gps', 13)} 地名识别</h4>
+    <div class="note" style="margin-bottom:10px">
+      「时光」里那些停留点，名字是这么来的：<br>
+      ① 你起过名字 → 用它<br>
+      ② 夜里老待的地方自动叫「<b>家</b>」，工作日白天老待的叫「<b>公司</b>」<em>（不用任何 Key）</em><br>
+      ③ 地址反查补上「越秀区」这类地名<br><br>
+      <b>想要精确到小区 / 商场 / 楼栋</b>，需要一个高德「<b>Web服务</b>」Key ——
+      你现在的 Key 是「Web端(JS API)」类型，只能画地图，查地址会被高德拒绝。
+    </div>
+    <div class="field">
+      <label>高德 Web服务 Key（可选）</label>
+      <input id="inAmapWK" placeholder="粘这里，留空就用免费的兜底" value="${esc(S.amapWebKey || '')}">
+      <div class="hint">
+        申请：<b>console.amap.com</b> → 应用管理 → 创建 Key → 服务平台选「<b>Web服务</b>」→ 复制 Key
+      </div>
+    </div>
+    <div class="field">
+      <label>配套的安全密钥（可选）</label>
+      <input id="inAmapWC" placeholder="创建 Key 时如果给了安全密钥就填这" value="${esc(S.amapWebCode || '')}">
+    </div>
+    <div class="btngrid">
+      <button class="btn sm ghost" id="btnGeoTest">测试一下</button>
+      <button class="btn sm" id="btnGeoSave">保存并重新识别</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h4>${Kitty.glyph('lock', 13)} 关于隐私</h4>
     <div class="note">
       位置通过 <b>ntfy.sh</b> 公共服务器中转。开启加密后，服务器只能看到一串密文。
@@ -1855,6 +1884,28 @@ function renderMe() {
     renderMe();
   };
   $('#btnRelayShare').onclick = () => openCfgShare();
+  const wkN = $('#inAmapWK'), wcN = $('#inAmapWC');
+  if (wkN) {
+    $('#btnGeoSave').onclick = () => {
+      S.amapWebKey = wkN.value.trim();
+      S.amapWebCode = wcN ? wcN.value.trim() : '';
+      S.tlGeo = {};            // 清掉旧的粗结果，重新识别
+      save();
+      toast(S.amapWebKey ? '已保存，正在重新识别地名…' : '已保存（用免费兜底）');
+      setTimeout(() => { geoBusy && Object.keys(geoBusy).forEach(k => delete geoBusy[k]); renderTimeline(true); }, 300);
+    };
+    $('#btnGeoTest').onclick = async () => {
+      const k = wkN.value.trim(), c = wcN ? wcN.value.trim() : '';
+      if (!k) { toast('先填一个 Key'); return; }
+      toast('正在测试…');
+      const bk = S.amapWebKey, bc = S.amapWebCode;
+      S.amapWebKey = k; S.amapWebCode = c;
+      const n = await fetchPlaceName(23.1291, 113.2644);
+      S.amapWebKey = bk; S.amapWebCode = bc;
+      if (n) toast('识别成功：「' + n + '」', true);
+      else toast('没识别出来 —— Key 类型对不对？要「Web服务」不是「Web端(JS API)」', false);
+    };
+  }
   $('#btnRelayTest').onclick = async () => {
     const raw = $('#inRelay').value.trim();
     const base = (raw || NTFY).replace(/\/+$/, '');
@@ -2698,39 +2749,144 @@ function renderTimeline(force) {
 }
 function tlKey(it) { return it.lat != null ? it.lat.toFixed(3) + ',' + it.lng.toFixed(3) : ''; }
 function tlName(it, i) {
-  if (it.name) return it.name;
+  if (it.name) return it.name;                       // 手动记录自带名字
   if (it.lat == null) return '停留点 ' + (i + 1);
   const k = tlKey(it);
-  const cached = (S.tlNames || {})[k];
-  if (cached) return cached;
-  tlGeocode(it, k, i);
+  const mine = (S.tlNames || {})[k];                 // ① 你起过的名字
+  if (mine) return mine;
+  const learned = learnPlaces()[k];                  // ② 行为学出来的（家/公司）
+  const geo = (S.tlGeo || {})[k];                    // ③ 地址反查
+  if (learned && geo && geo !== learned) return learned + ' · ' + geo;
+  if (learned || geo) return learned || geo;
+  tlGeocode(it, k, i);                               // 都没有 → 去查，先占位
   return '停留点 ' + (i + 1);
 }
+/* ============================================================
+   停留地点的「自动识别」
+   ------------------------------------------------------------
+   为什么不能只靠高德：高德的地名反查走的是 restapi（Web服务），
+   而现在这个 Key 是「Web端(JS API)」类型 —— 只能画地图，查地址会被拒
+   （返回 USERKEY_PLAT_NOMATCH）。所以做成三层，尽量不让你手动改：
+
+     ① 你自己起的名字        —— 有就永远用它
+     ② 从行为里学出来的名字   —— 不用任何 Key，纯本地算：
+           夜里都待这 →「家」；工作日白天都待这 →「公司」；常去的 →「常去的地方」
+     ③ 地址反查              —— 配了高德 Web服务 Key 就用高德（最准，能到楼栋/商场）；
+                              没配就用免费接口兜到区县
+
+   结果拼起来就是「家 · 越秀区」这种，比自己起名省事。
+   ============================================================ */
+const LEARN_LABELS = {};      // key → 「家」/「公司」/「常去的地方」
+let learnAt = 0;
+
+/* 扫最近 14 天两条轨迹，按 ~100 米聚类，看每个地方都在什么时段被停留 */
+function learnPlaces() {
+  const now = Date.now();
+  if (now - learnAt < 120000 && Object.keys(LEARN_LABELS).length) return LEARN_LABELS;
+  learnAt = now;
+  const stat = {};
+  const scan = (list) => {
+    if (!list || !list.length) return;
+    // 逐天聚类，跨天同一个点会归到同一个 key
+    for (let off = 0; off < 14; off++) {
+      const d0 = dayStart() - off * DAY_MS;
+      visitsOn(list, d0).forEach(v => {
+        const k = v.lat.toFixed(3) + ',' + v.lng.toFixed(3);
+        const st = stat[k] || (stat[k] = { night: 0, work: 0, total: 0, days: {} });
+        const dur = Math.max(0, v.t1 - v.t0);
+        st.total += dur;
+        st.days[off] = 1;
+        const dh = new Date(v.t0);
+        const h = dh.getHours(), wd = dh.getDay();
+        if (h >= 0 && h < 6) st.night += dur;
+        if (wd >= 1 && wd <= 5 && h >= 9 && h < 18) st.work += dur;
+      });
+    }
+  };
+  scan(peerHistory); scan(myTrail);
+  for (const k in LEARN_LABELS) delete LEARN_LABELS[k];
+  for (const k in stat) {
+    const st = stat[k];
+    const nd = Object.keys(st.days).length;
+    if (nd < 2 || st.total < 1800000) continue;          // 至少来过两天、累计半小时
+    if (st.night / st.total >= 0.3) LEARN_LABELS[k] = '家';
+    else if (st.work / st.total >= 0.45) LEARN_LABELS[k] = '公司';
+    else if (nd >= 3) LEARN_LABELS[k] = '常去的地方';
+  }
+  return LEARN_LABELS;
+}
+
+/* 地址反查：高德 Web服务（准）→ 免费接口（只到区县） */
+const geoBusy = {};
+async function fetchPlaceName(lat, lng) {
+  // ① 高德 Web服务 Key
+  const wk = (S.amapWebKey || '').trim();
+  if (wk) {
+    try {
+      const jc = (S.amapWebCode || '').trim();
+      const u = 'https://restapi.amap.com/v3/geocode/regeo?key=' + encodeURIComponent(wk)
+        + (jc ? '&jscode=' + encodeURIComponent(jc) : '')
+        + '&location=' + lng.toFixed(6) + ',' + lat.toFixed(6) + '&extensions=all&radius=500';
+      const r = await fetch(u);
+      const j = await r.json();
+      if (j && j.status === '1' && j.regeocode) {
+        const n = pickPlaceName(j.regeocode);
+        if (n) return n;
+      } else if (j && j.info) {
+        console.log('[地名] 高德拒绝：' + j.info);
+      }
+    } catch (e) { console.log('[地名] 高德异常 ' + e); }
+  } else {
+    // ② 免费兜底：只到区县，用来给「家 / 公司」补个地名
+    try {
+      const w = GCJ.gcj2wgs(lat, lng);
+      const r = await fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude='
+        + w[0].toFixed(6) + '&longitude=' + w[1].toFixed(6) + '&localityLanguage=zh');
+      const j = await r.json();
+      const n = j.locality || j.city || j.principalSubdivision || '';
+      if (n) return n;
+    } catch (e) {}
+  }
+  return '';
+}
+
+function pickPlaceName(rc) {
+  const c = rc.addressComponent || {};
+  const pois = rc.pois || [];
+  for (const p of pois) {
+    const n = (p && p.name) || '';
+    // POI 里纯路名的跳过（「XX路」当不了地标）
+    if (n && !/^[\u4e00-\u9fa5]{1,10}(路|街|大道|巷|胡同)$/.test(n)) return n;
+  }
+  if (c.building && c.building.name) return c.building.name;
+  if (c.neighborhood && c.neighborhood.name) return c.neighborhood.name;
+  if (c.building) return c.building;
+  if (c.streetNumber && c.streetNumber.street) {
+    return c.streetNumber.street + (c.streetNumber.number || '');
+  }
+  if (c.township) return c.township;
+  if (c.district) return c.district;
+  const a = rc.formattedAddress || '';
+  if (a) return a.split(',').slice(0, 2).join(' ').slice(0, 12);
+  return '';
+}
+
+/* 后台把这个点的地名查回来，存进 S.tlGeo（和用户自己起的 S.tlNames 分开存，
+   这样自动结果永远盖不掉用户起的名字） */
 function tlGeocode(it, k, i) {
-  if (!amap || !window.AMap) return;
-  try {
-    AMap.plugin('AMap.Geocoder', () => {
-      try {
-        const g = new AMap.Geocoder({ radius: 300, extensions: 'base' });
-        g.getAddress([it.lng, it.lat], (st, res) => {
-          if (st !== 'complete' || !res || !res.regeocode) return;
-          const c = res.regeocode.addressComponent || {};
-          const poi = res.regeocode.pois && res.regeocode.pois[0];
-          let out = (poi && poi.name) || c.building || c.streetNumber || c.district || '';
-          if (!out) {
-            const a = res.regeocode.formattedAddress || '';
-            out = a ? a.split(',').slice(0, 2).join(' ') : '';
-          }
-          // 用户手动改过名字就不许自动反查覆盖它（之前就是这个把自定义地名冲掉的）
-          S.tlNames = S.tlNames || {};
-          if (!S.tlNames[k]) {
-            S.tlNames[k] = out; save();
-            if (isTimelineOpen()) renderTimeline();
-          }
-        });
-      } catch (e) {}
-    });
-  } catch (e) {}
+  if (k == null || it.lat == null) return;
+  if (S.tlNames && S.tlNames[k]) return;         // 用户起过名字就不查了
+  if (S.tlGeo && S.tlGeo[k]) return;             // 以前查到了
+  if (geoBusy[k]) return;
+  geoBusy[k] = 1;
+  fetchPlaceName(it.lat, it.lng).then(name => {
+    delete geoBusy[k];
+    if (!name) return;
+    console.log('[地名] ' + k + ' → ' + name);
+    S.tlGeo = S.tlGeo || {};
+    if (!S.tlGeo[k]) { S.tlGeo[k] = name; save(); }
+    if (isTimelineOpen()) renderTimeline();
+  }).catch(() => { delete geoBusy[k]; });
 }
 function isTimelineOpen() { const t = document.getElementById('timeline'); return t && !t.hidden; }
 function tlRename(it, i) {

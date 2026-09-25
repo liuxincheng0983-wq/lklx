@@ -153,7 +153,19 @@ let peerAddrSig = '', peerWeatherSig = '', lastWeather = 0;
 function load(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
 
 /* ---- 原生桥：安卓壳里设置存在 SharedPreferences，换端口/清缓存都不丢 ---- */
+const WEB_VER = 'v25';
 function hasNative() { return typeof LKLX !== 'undefined' && LKLX && LKLX.cfg; }
+/* 原生壳的版本号（安卓 = versionCode）。装完新版这里会变大，
+   用来确认「到底更新了没有」—— 之前没有这个，更新了也看不出来。 */
+function nativeVer() {
+  try {
+    if (!hasNative() || !LKLX.sys) return '';
+    const o = JSON.parse(LKLX.sys() || '{}') || {};
+    if (o.verName) return o.verName;
+    if (o.ver) return 'v' + o.ver;
+  } catch (e) {}
+  return '';
+}
 function nativeGet() {
   if (!hasNative()) return null;
   try { return JSON.parse(LKLX.cfg() || 'null'); } catch (e) { return null; }
@@ -1739,7 +1751,10 @@ function renderMe() {
       本应用不上架、不收集任何数据，所有内容只存在你们两台手机上。
     </div>
     <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--ink3)">
-      ${Kitty.logo(22)}<br>两颗心 v1.0 · 只为你们两个人做的
+      ${Kitty.logo(22)}<br>两颗心${nativeVer() ? ' · App ' + esc(nativeVer()) : ''} · 只为你们两个人做的
+      <div style="margin-top:6px;font-size:10px;color:#C39FB0" id="verLine">
+        网页 ${WEB_VER}${hasNative() ? ' · 已装安卓壳' : ' · 浏览器打开'}
+      </div>
     </div>
   </div>`;
 
